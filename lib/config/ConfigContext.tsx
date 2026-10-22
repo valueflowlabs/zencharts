@@ -22,6 +22,10 @@ import {
   instrumentList,
   isValidSymbol,
 } from "@/lib/instruments";
+import {
+  DEFAULT_MOMENTUM_LOOKBACK,
+  isValidLookback,
+} from "@/lib/indicators/momentum";
 
 // The app's configuration surface, shaped so new settings can be added here and
 // exposed to the terminal without churn.
@@ -33,18 +37,38 @@ export interface ConfigValue {
   symbol: string;
   symbols: { id: string; label: string }[];
   setSymbol: (id: string) => boolean; // false if the id is unknown
+  momentum: boolean; // momentum histogram shown under the candles
+  setMomentum: (on: boolean) => void;
+  momentumLookback: number; // bars
+  setMomentumLookback: (n: number) => boolean; // false if out of range
 }
 
 const ConfigContext = createContext<ConfigValue | null>(null);
 
-function readSaved(): { themeName: string; symbol: string } {
-  const fallback = { themeName: DEFAULT_THEME, symbol: DEFAULT_SYMBOL };
+interface Saved {
+  themeName: string;
+  symbol: string;
+  momentum: boolean;
+  momentumLookback: number;
+}
+
+function readSaved(): Saved {
+  const fallback: Saved = {
+    themeName: DEFAULT_THEME,
+    symbol: DEFAULT_SYMBOL,
+    momentum: false,
+    momentumLookback: DEFAULT_MOMENTUM_LOOKBACK,
+  };
   if (typeof window === "undefined") return fallback;
   try {
     const c = JSON.parse(localStorage.getItem(STORAGE_KEY) || "{}");
     return {
       themeName: c?.themeName && THEMES[c.themeName] ? c.themeName : DEFAULT_THEME,
       symbol: c?.symbol && isValidSymbol(c.symbol) ? c.symbol : DEFAULT_SYMBOL,
+      momentum: c?.momentum === true,
+      momentumLookback: isValidLookback(c?.momentumLookback)
+        ? c.momentumLookback
+        : DEFAULT_MOMENTUM_LOOKBACK,
     };
   } catch {
     return fallback;
@@ -62,20 +86,27 @@ function applyThemeVars(theme: Theme) {
 export function ConfigProvider({ children }: { children: React.ReactNode }) {
   // Lazy init from storage so first client render already matches the inline
   // boot script — no flash, no hydration mismatch (these aren't rendered).
-  const [{ themeName: initTheme, symbol: initSymbol }] = useState(readSaved);
-  const [themeName, setThemeName] = useState<string>(initTheme);
-  const [symbol, setSymbolState] = useState<string>(initSymbol);
+  const [saved] = useState(readSaved);
+  const [themeName, setThemeName] = useState<string>(saved.themeName);
+  const [symbol, setSymbolState] = useState<string>(saved.symbol);
+  const [momentum, setMomentum] = useState<boolean>(saved.momentum);
+  const [momentumLookback, setLookbackState] = useState<number>(
+    saved.momentumLookback
+  );
 
   const theme = getTheme(themeName);
 
   useEffect(() => {
     applyThemeVars(theme);
     try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify({ themeName, symbol }));
+      localStorage.setItem(
+        STORAGE_KEY,
+        JSON.stringify({ themeName, symbol, momentum, momentumLookback })
+      );
     } catch {
       /* ignore quota/availability errors */
     }
-  }, [themeName, theme, symbol]);
+  }, [themeName, theme, symbol, momentum, momentumLookback]);
 
   const setTheme = useCallback((name: string): boolean => {
     if (!THEMES[name]) return false;
@@ -89,6 +120,12 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
     return true;
   }, []);
 
+  const setMomentumLookback = useCallback((n: number): boolean => {
+    if (!isValidLookback(n)) return false;
+    setLookbackState(n);
+    return true;
+  }, []);
+
   const value = useMemo<ConfigValue>(
     () => ({
       themeName,
@@ -98,8 +135,21 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
       symbol,
       symbols: instrumentList(),
       setSymbol,
+      momentum,
+      setMomentum,
+      momentumLookback,
+      setMomentumLookback,
     }),
-    [themeName, theme, setTheme, symbol, setSymbol]
+    [
+      themeName,
+      theme,
+      setTheme,
+      symbol,
+      setSymbol,
+      momentum,
+      momentumLookback,
+      setMomentumLookback,
+    ]
   );
 
   return (

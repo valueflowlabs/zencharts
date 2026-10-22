@@ -17,6 +17,10 @@ export interface ConfigApi {
   symbol: string;
   symbols: { id: string; label: string }[];
   setSymbol: (id: string) => boolean;
+  momentum: boolean;
+  setMomentum: (on: boolean) => void;
+  momentumLookback: number;
+  setMomentumLookback: (n: number) => boolean;
 }
 
 // Everything a command needs to do its job, injected by the host.

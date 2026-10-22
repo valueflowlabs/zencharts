@@ -12,6 +12,9 @@ into the background, and switch instruments from the configuration console.
 - **Instruments:** BTC/USD and ZEC/USD (switch via the console; see below).
 - **Timeframes:** 15m, 30m, 1H, 4H, 1D, 1W (15m is the lowest granularity).
 - **Live last candle** — the most recent bar updates on a timeframe-aware poll.
+- **Momentum indicator** (optional, off by default) — % change in close over
+  the last N bars, as a quiet histogram under the candles. Toggle it from the
+  console; see "Research" below for why momentum.
 - **Free, good-quality data** — Binance public market-data endpoint, no API key.
 
 ## Stack
@@ -51,6 +54,9 @@ can grow:
   persisted to `localStorage`
 - `symbol list` / `symbol set <id>` / `symbol <id>` (aliases: `chart`, `pair`)
   — switch the charted instrument (`btc`, `zec`); persisted to `localStorage`
+- `momentum` / `momentum on` / `momentum off` / `momentum toggle` /
+  `momentum lookback <n>` (alias: `mom`) — show or hide the momentum histogram
+  and set its lookback in bars (2–500, default 20); persisted to `localStorage`
 - `config show` — dump current settings
 - `clear`, `about`, `exit`
 - ↑/↓ history (persisted), Tab-completion, Esc to close
@@ -88,6 +94,7 @@ components/
   Chart.tsx             # lightweight-charts candlestick + live polling
   TimeframeSelector.tsx # minimal timeframe switcher
 lib/
+  indicators/momentum.ts # time-series momentum (% change over N bars)
   timeframes.ts         # allowed timeframes (single source of truth)
   types.ts              # Candle shape
 ```
@@ -116,7 +123,7 @@ against our own history before trusting any of them.
   Financial Studies, 2021) found strong momentum in crypto returns: recent rises
   tend to continue. Cheah et al. (2022) compared many predictors and found
   momentum and economic-uncertainty measures did best, including on data the
-  models hadn't seen.
+  models hadn't seen. _Implemented:_ `momentum on` in the console.
 - **Investor attention also forecasts returns.** That is Liu & Tsyvinski's
   second finding.
 - **The Fear & Greed index has weak, mixed evidence.** Buying at "extreme fear"

@@ -2,6 +2,10 @@
 // registry, help output, and Tab-completion pick it up automatically.
 
 import type { Command } from "./types";
+import {
+  MAX_MOMENTUM_LOOKBACK,
+  MIN_MOMENTUM_LOOKBACK,
+} from "../indicators/momentum";
 
 const help: Command = {
   name: "help",
@@ -103,6 +107,53 @@ const symbol: Command = {
   },
 };
 
+const momentum: Command = {
+  name: "momentum",
+  aliases: ["mom"],
+  summary: "Toggle the momentum indicator (% change over N bars)",
+  usage: "momentum | momentum on | momentum off | momentum lookback <n>",
+  run: (ctx) => {
+    const [sub, arg] = ctx.args;
+    const { momentum: on, momentumLookback: n } = ctx.config;
+    if (!sub) {
+      ctx.print(`momentum: ${on ? "on" : "off"} · lookback ${n} bars`, "out");
+      ctx.print(
+        "usage: momentum on | momentum off | momentum lookback <n>",
+        "info"
+      );
+      return;
+    }
+    if (sub === "on" || sub === "off") {
+      ctx.config.setMomentum(sub === "on");
+      ctx.print(`momentum → ${sub}`, "out");
+      return;
+    }
+    if (sub === "toggle") {
+      ctx.config.setMomentum(!on);
+      ctx.print(`momentum → ${on ? "off" : "on"}`, "out");
+      return;
+    }
+    if (sub === "lookback") {
+      const next = Number(arg);
+      if (!arg || !ctx.config.setMomentumLookback(next)) {
+        return ctx.print(
+          `lookback must be a whole number ${MIN_MOMENTUM_LOOKBACK}–${MAX_MOMENTUM_LOOKBACK}`,
+          "err"
+        );
+      }
+      ctx.print(`momentum lookback → ${next} bars`, "out");
+      return;
+    }
+    ctx.print(`unknown: momentum ${sub} (try 'help momentum')`, "err");
+  },
+  complete: (preceding) => {
+    if (preceding.length === 0) return ["on", "off", "toggle", "lookback"];
+    if (preceding[0] === "lookback" && preceding.length === 1)
+      return ["10", "20", "50", "100"];
+    return [];
+  },
+};
+
 const config: Command = {
   name: "config",
   summary: "Show the current configuration",
@@ -113,6 +164,10 @@ const config: Command = {
     ctx.print("configuration:", "info");
     ctx.print(`  theme  = ${ctx.config.themeName}`, "out");
     ctx.print(`  symbol = ${ctx.config.symbol}`, "out");
+    ctx.print(
+      `  momentum = ${ctx.config.momentum ? "on" : "off"} (lookback ${ctx.config.momentumLookback})`,
+      "out"
+    );
   },
   complete: (preceding) => (preceding.length === 0 ? ["show"] : []),
 };
@@ -148,6 +203,7 @@ export const COMMANDS: Command[] = [
   help,
   theme,
   symbol,
+  momentum,
   config,
   clear,
   about,

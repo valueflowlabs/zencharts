@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   createChart,
   ColorType,
@@ -12,6 +12,7 @@ import {
 import type { TimeframeKey } from "@/lib/timeframes";
 import type { Candle } from "@/lib/types";
 import { useConfig } from "@/lib/config/ConfigContext";
+import { momentumAt, momentumSeries } from "@/lib/indicators/momentum";
 
 // How often we refresh the latest candle so the chart feels "live",
 // keyed by timeframe. Lower timeframes update more often.
@@ -25,6 +26,17 @@ const POLL_MS: Record<TimeframeKey, number> = {
 };
 
 type Status = "loading" | "ready" | "error";
+
+// Vertical split when the momentum pane is shown: candles on top, momentum
+// histogram in the bottom ~20%.
+const CANDLE_MARGINS = { top: 0.2, bottom: 0.1 }; // library default
+const CANDLE_MARGINS_WITH_PANE = { top: 0.08, bottom: 0.26 };
+const MOMENTUM_MARGINS = { top: 0.8, bottom: 0.02 };
+
+// Translucent version of a #rrggbb color, so the pane stays quiet.
+function soften(hex: string, alpha = "80"): string {
+  return /^#[0-9a-f]{6}$/i.test(hex) ? hex + alpha : hex;
+}
 
 async function fetchCandles(
   symbol: string,
@@ -47,13 +59,18 @@ export default function Chart({ timeframe }: { timeframe: TimeframeKey }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
   const seriesRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
+  const momentumRef = useRef<ISeriesApi<"Histogram"> | null>(null);
+  const candlesRef = useRef<Candle[]>([]);
   const [status, setStatus] = useState<Status>("loading");
 
-  const { theme, symbol } = useConfig();
+  const { theme, symbol, momentum, momentumLookback } = useConfig();
   // Keep the latest theme reachable from the mount-only effect without making
   // the chart re-create on every theme change (that is handled separately).
   const themeRef = useRef(theme);
   themeRef.current = theme;
+  // Same for the momentum settings, read by the live poll.
+  const momentumCfgRef = useRef({ on: momentum, lookback: momentumLookback });
+  momentumCfgRef.current = { on: momentum, lookback: momentumLookback };
 
   // Create the chart once, on mount (colored from the current theme).
   useEffect(() => {
@@ -73,6 +90,11 @@ export default function Chart({ timeframe }: { timeframe: TimeframeKey }) {
         horzLines: { color: c.grid },
       },
       crosshair: { mode: CrosshairMode.Normal },
+      // The price axis runs on into the momentum pane (v4 has no real panes);
+      // blank the non-positive "prices" there instead of showing -10000.00.
+      localization: {
+        priceFormatter: (p: number) => (p > 0 ? p.toFixed(2) : ""),
+      },
       rightPriceScale: { borderColor: c.border },
       timeScale: {
         borderColor: c.border,
@@ -90,13 +112,28 @@ export default function Chart({ timeframe }: { timeframe: TimeframeKey }) {
       wickDownColor: c.down,
     });
 
+    const momentumSeriesApi = chart.addHistogramSeries({
+      priceScaleId: "momentum",
+      visible: false,
+      lastValueVisible: false,
+      priceLineVisible: false,
+      priceFormat: {
+        type: "custom",
+        formatter: (v: number) => `${v >= 0 ? "+" : ""}${v.toFixed(1)}%`,
+        minMove: 0.01,
+      },
+    });
+    chart.priceScale("momentum").applyOptions({ scaleMargins: MOMENTUM_MARGINS });
+
     chartRef.current = chart;
     seriesRef.current = series;
+    momentumRef.current = momentumSeriesApi;
 
     return () => {
       chart.remove();
       chartRef.current = null;
       seriesRef.current = null;
+      momentumRef.current = null;
     };
   }, []);
 
@@ -128,6 +165,31 @@ export default function Chart({ timeframe }: { timeframe: TimeframeKey }) {
     });
   }, [theme]);
 
+  // Redraw the momentum pane from the candles currently on the chart.
+  const drawMomentum = useCallback(() => {
+    const chart = chartRef.current;
+    const mom = momentumRef.current;
+    if (!chart || !mom) return;
+    const { on, lookback } = momentumCfgRef.current;
+    chart
+      .priceScale("right")
+      .applyOptions({
+        scaleMargins: on ? CANDLE_MARGINS_WITH_PANE : CANDLE_MARGINS,
+      });
+    mom.applyOptions({ visible: on });
+    if (!on) return mom.setData([]);
+    const c = themeRef.current.chart;
+    mom.setData(
+      momentumSeries(candlesRef.current, lookback).map((p) => ({
+        time: p.time as UTCTimestamp,
+        value: p.value,
+        color: soften(p.value >= 0 ? c.up : c.down),
+      }))
+    );
+  }, []);
+
+  useEffect(drawMomentum, [drawMomentum, momentum, momentumLookback, theme]);
+
   // (Re)load data whenever the instrument or timeframe changes, then poll the
   // last candle.
   useEffect(() => {
@@ -140,6 +202,8 @@ export default function Chart({ timeframe }: { timeframe: TimeframeKey }) {
     let cancelled = false;
 
     setStatus("loading");
+    candlesRef.current = [];
+    drawMomentum();
 
     fetchCandles(symbol, timeframe, undefined, controller.signal)
       .then((candles) => {
@@ -147,6 +211,8 @@ export default function Chart({ timeframe }: { timeframe: TimeframeKey }) {
         series.setData(
           candles.map((c) => ({ ...c, time: c.time as UTCTimestamp }))
         );
+        candlesRef.current = candles;
+        drawMomentum();
         chart.timeScale().fitContent();
         setStatus("ready");
 
@@ -157,6 +223,25 @@ export default function Chart({ timeframe }: { timeframe: TimeframeKey }) {
             if (cancelled || latest.length === 0) return;
             const c = latest[latest.length - 1];
             series.update({ ...c, time: c.time as UTCTimestamp });
+
+            // Keep our copy in step (replace the live bar or append a new one)
+            // and refresh the last momentum bar.
+            const all = candlesRef.current;
+            if (all.length && all[all.length - 1].time === c.time) {
+              all[all.length - 1] = c;
+            } else if (!all.length || c.time > all[all.length - 1].time) {
+              all.push(c);
+            }
+            const { on, lookback } = momentumCfgRef.current;
+            const p = on ? momentumAt(all, all.length - 1, lookback) : null;
+            if (p && momentumRef.current) {
+              const tc = themeRef.current.chart;
+              momentumRef.current.update({
+                time: p.time as UTCTimestamp,
+                value: p.value,
+                color: soften(p.value >= 0 ? tc.up : tc.down),
+              });
+            }
           } catch {
             /* transient network hiccup — ignore, next tick retries */
           }
@@ -171,7 +256,7 @@ export default function Chart({ timeframe }: { timeframe: TimeframeKey }) {
       controller.abort();
       if (pollTimer) clearInterval(pollTimer);
     };
-  }, [symbol, timeframe]);
+  }, [symbol, timeframe, drawMomentum]);
 
   return (
     <div className="chart-wrap">
