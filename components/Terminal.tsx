@@ -28,7 +28,8 @@ const banner = (): OutputLine[] => [
 ];
 
 export default function Terminal() {
-  const { themeName, themes, setTheme } = useConfig();
+  const { themeName, themes, setTheme, symbol, symbols, setSymbol } =
+    useConfig();
 
   const [open, setOpen] = useState(false);
   const [lines, setLines] = useState<OutputLine[]>(banner);
@@ -51,8 +52,8 @@ export default function Terminal() {
   const close = useCallback(() => setOpen(false), []);
 
   const config: ConfigApi = useMemo(
-    () => ({ themeName, themes, setTheme }),
-    [themeName, themes, setTheme]
+    () => ({ themeName, themes, setTheme, symbol, symbols, setSymbol }),
+    [themeName, themes, setTheme, symbol, symbols, setSymbol]
   );
 
   // Reactive completions for the current input.

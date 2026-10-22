@@ -17,27 +17,38 @@ import {
   themeToVars,
   type Theme,
 } from "@/lib/themes";
+import {
+  DEFAULT_SYMBOL,
+  instrumentList,
+  isValidSymbol,
+} from "@/lib/instruments";
 
-// The app's configuration surface. Currently just the theme, but shaped so new
-// settings can be added here and exposed to the terminal without churn.
+// The app's configuration surface, shaped so new settings can be added here and
+// exposed to the terminal without churn.
 export interface ConfigValue {
   themeName: string;
   theme: Theme;
   themes: { name: string; label: string }[];
   setTheme: (name: string) => boolean; // false if the name is unknown
+  symbol: string;
+  symbols: { id: string; label: string }[];
+  setSymbol: (id: string) => boolean; // false if the id is unknown
 }
 
 const ConfigContext = createContext<ConfigValue | null>(null);
 
-function readSavedThemeName(): string {
-  if (typeof window === "undefined") return DEFAULT_THEME;
+function readSaved(): { themeName: string; symbol: string } {
+  const fallback = { themeName: DEFAULT_THEME, symbol: DEFAULT_SYMBOL };
+  if (typeof window === "undefined") return fallback;
   try {
     const c = JSON.parse(localStorage.getItem(STORAGE_KEY) || "{}");
-    if (c?.themeName && THEMES[c.themeName]) return c.themeName;
+    return {
+      themeName: c?.themeName && THEMES[c.themeName] ? c.themeName : DEFAULT_THEME,
+      symbol: c?.symbol && isValidSymbol(c.symbol) ? c.symbol : DEFAULT_SYMBOL,
+    };
   } catch {
-    /* ignore malformed storage */
+    return fallback;
   }
-  return DEFAULT_THEME;
 }
 
 function applyThemeVars(theme: Theme) {
@@ -50,19 +61,21 @@ function applyThemeVars(theme: Theme) {
 
 export function ConfigProvider({ children }: { children: React.ReactNode }) {
   // Lazy init from storage so first client render already matches the inline
-  // boot script — no flash, no hydration mismatch (themeName isn't rendered).
-  const [themeName, setThemeName] = useState<string>(readSavedThemeName);
+  // boot script — no flash, no hydration mismatch (these aren't rendered).
+  const [{ themeName: initTheme, symbol: initSymbol }] = useState(readSaved);
+  const [themeName, setThemeName] = useState<string>(initTheme);
+  const [symbol, setSymbolState] = useState<string>(initSymbol);
 
   const theme = getTheme(themeName);
 
   useEffect(() => {
     applyThemeVars(theme);
     try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify({ themeName }));
+      localStorage.setItem(STORAGE_KEY, JSON.stringify({ themeName, symbol }));
     } catch {
       /* ignore quota/availability errors */
     }
-  }, [themeName, theme]);
+  }, [themeName, theme, symbol]);
 
   const setTheme = useCallback((name: string): boolean => {
     if (!THEMES[name]) return false;
@@ -70,9 +83,23 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
     return true;
   }, []);
 
+  const setSymbol = useCallback((id: string): boolean => {
+    if (!isValidSymbol(id)) return false;
+    setSymbolState(id);
+    return true;
+  }, []);
+
   const value = useMemo<ConfigValue>(
-    () => ({ themeName, theme, themes: themeList(), setTheme }),
-    [themeName, theme, setTheme]
+    () => ({
+      themeName,
+      theme,
+      themes: themeList(),
+      setTheme,
+      symbol,
+      symbols: instrumentList(),
+      setSymbol,
+    }),
+    [themeName, theme, setTheme, symbol, setSymbol]
   );
 
   return (

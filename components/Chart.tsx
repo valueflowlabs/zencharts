@@ -27,13 +27,17 @@ const POLL_MS: Record<TimeframeKey, number> = {
 type Status = "loading" | "ready" | "error";
 
 async function fetchCandles(
+  symbol: string,
   interval: TimeframeKey,
   limit: number | undefined,
   signal?: AbortSignal
 ): Promise<Candle[]> {
   // No `limit` -> full multi-source history; a `limit` -> fast recent fetch.
   const qs = limit === undefined ? "" : `&limit=${limit}`;
-  const res = await fetch(`/api/candles?interval=${interval}${qs}`, { signal });
+  const res = await fetch(
+    `/api/candles?symbol=${symbol}&interval=${interval}${qs}`,
+    { signal }
+  );
   if (!res.ok) throw new Error(`Request failed (${res.status})`);
   const data = (await res.json()) as { candles: Candle[] };
   return data.candles;
@@ -45,7 +49,7 @@ export default function Chart({ timeframe }: { timeframe: TimeframeKey }) {
   const seriesRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
   const [status, setStatus] = useState<Status>("loading");
 
-  const { theme } = useConfig();
+  const { theme, symbol } = useConfig();
   // Keep the latest theme reachable from the mount-only effect without making
   // the chart re-create on every theme change (that is handled separately).
   const themeRef = useRef(theme);
@@ -124,7 +128,8 @@ export default function Chart({ timeframe }: { timeframe: TimeframeKey }) {
     });
   }, [theme]);
 
-  // (Re)load data whenever the timeframe changes, then poll the last candle.
+  // (Re)load data whenever the instrument or timeframe changes, then poll the
+  // last candle.
   useEffect(() => {
     const series = seriesRef.current;
     const chart = chartRef.current;
@@ -136,7 +141,7 @@ export default function Chart({ timeframe }: { timeframe: TimeframeKey }) {
 
     setStatus("loading");
 
-    fetchCandles(timeframe, undefined, controller.signal)
+    fetchCandles(symbol, timeframe, undefined, controller.signal)
       .then((candles) => {
         if (cancelled) return;
         series.setData(
@@ -148,7 +153,7 @@ export default function Chart({ timeframe }: { timeframe: TimeframeKey }) {
         // Poll just the most recent candle and update/append it in place.
         pollTimer = setInterval(async () => {
           try {
-            const latest = await fetchCandles(timeframe, 1);
+            const latest = await fetchCandles(symbol, timeframe, 1);
             if (cancelled || latest.length === 0) return;
             const c = latest[latest.length - 1];
             series.update({ ...c, time: c.time as UTCTimestamp });
@@ -166,7 +171,7 @@ export default function Chart({ timeframe }: { timeframe: TimeframeKey }) {
       controller.abort();
       if (pollTimer) clearInterval(pollTimer);
     };
-  }, [timeframe]);
+  }, [symbol, timeframe]);
 
   return (
     <div className="chart-wrap">

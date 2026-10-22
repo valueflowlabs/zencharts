@@ -65,6 +65,44 @@ const theme: Command = {
   },
 };
 
+const symbol: Command = {
+  name: "symbol",
+  aliases: ["chart", "pair"],
+  summary: "Show, list, or change the charted instrument",
+  usage: "symbol | symbol list | symbol set <id> | symbol <id>",
+  run: (ctx) => {
+    const [sub, maybeId] = ctx.args;
+    const current = ctx.config.symbols.find((s) => s.id === ctx.config.symbol);
+    if (!sub) {
+      ctx.print(
+        `current: ${current?.label ?? ctx.config.symbol} (${ctx.config.symbol})`,
+        "out"
+      );
+      ctx.print("usage: symbol list | symbol set <id> | symbol <id>", "info");
+      return;
+    }
+    if (sub === "list") {
+      for (const s of ctx.config.symbols) {
+        const active = s.id === ctx.config.symbol ? "  (active)" : "";
+        ctx.print(`  ${s.id.padEnd(6)} ${s.label}${active}`, "out");
+      }
+      return;
+    }
+    const id = sub === "set" ? maybeId : sub;
+    if (!id) return ctx.print("usage: symbol set <id>", "err");
+    const ok = ctx.config.setSymbol(id);
+    if (!ok) return ctx.print(`unknown symbol: ${id} (try 'symbol list')`, "err");
+    const label = ctx.config.symbols.find((s) => s.id === id)?.label ?? id;
+    ctx.print(`chart → ${label}`, "out");
+  },
+  complete: (preceding, config) => {
+    const ids = config.symbols.map((s) => s.id);
+    if (preceding.length === 0) return ["list", "set", ...ids];
+    if (preceding[0] === "set" && preceding.length === 1) return ids;
+    return [];
+  },
+};
+
 const config: Command = {
   name: "config",
   summary: "Show the current configuration",
@@ -73,7 +111,8 @@ const config: Command = {
     const sub = ctx.args[0] ?? "show";
     if (sub !== "show") return ctx.print(`unknown: config ${sub}`, "err");
     ctx.print("configuration:", "info");
-    ctx.print(`  theme = ${ctx.config.themeName}`, "out");
+    ctx.print(`  theme  = ${ctx.config.themeName}`, "out");
+    ctx.print(`  symbol = ${ctx.config.symbol}`, "out");
   },
   complete: (preceding) => (preceding.length === 0 ? ["show"] : []),
 };
@@ -89,8 +128,8 @@ const about: Command = {
   name: "about",
   summary: "About zencharts",
   run: (ctx) => {
-    ctx.print("zencharts — zen-mode BTC/USD charts", "out");
-    ctx.print("data: Binance (2017+) · Bitstamp (2011+)", "info");
+    ctx.print("zencharts — zen-mode crypto/USD charts", "out");
+    ctx.print("instruments: BTC, ZEC · data: Binance + Bitstamp", "info");
     ctx.print("this console configures the app — type 'help'", "info");
   },
 };
@@ -105,4 +144,12 @@ const exit: Command = {
   },
 };
 
-export const COMMANDS: Command[] = [help, theme, config, clear, about, exit];
+export const COMMANDS: Command[] = [
+  help,
+  theme,
+  symbol,
+  config,
+  clear,
+  about,
+  exit,
+];

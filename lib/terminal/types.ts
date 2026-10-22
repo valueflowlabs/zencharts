@@ -14,6 +14,9 @@ export interface ConfigApi {
   themeName: string;
   themes: { name: string; label: string }[];
   setTheme: (name: string) => boolean;
+  symbol: string;
+  symbols: { id: string; label: string }[];
+  setSymbol: (id: string) => boolean;
 }
 
 // Everything a command needs to do its job, injected by the host.

@@ -1,14 +1,15 @@
 # zencharts
 
-Zen-mode BTC/USD candlestick charts. Just the chart. Nothing else.
+Zen-mode crypto/USD candlestick charts. Just the chart. Nothing else.
 
-A full-screen candlestick chart of Bitcoin across multiple timeframes — no
-order books, no news, no watchlists, no noise. Switch timeframes from a minimal
-bar that fades into the background until you reach for it.
+A full-screen candlestick chart across multiple timeframes — no order books, no
+news, no watchlists, no noise. Switch timeframes from a minimal bar that fades
+into the background, and switch instruments from the configuration console.
 
 ## Features
 
 - **Full-bleed zen view** — the chart is the entire screen.
+- **Instruments:** BTC/USD and ZEC/USD (switch via the console; see below).
 - **Timeframes:** 15m, 30m, 1H, 4H, 1D, 1W (15m is the lowest granularity).
 - **Live last candle** — the most recent bar updates on a timeframe-aware poll.
 - **Free, good-quality data** — Binance public market-data endpoint, no API key.
@@ -21,17 +22,22 @@ bar that fades into the background until you reach for it.
   proxy the data provider (avoids browser CORS and hides the upstream). See
   "Why no NestJS?" below if you ever want to split the backend out.
 
-## Data source
+## Data sources
 
-Candles come from Binance's public, read-only market-data host
-`data-api.binance.vision` (`GET /api/v3/klines`). It is free, needs no API key,
-is not geo-restricted, and has excellent historical depth and quality.
+Candles come from two free, keyless, read-only public market-data hosts, proxied
+and stitched server-side for maximum history:
 
-The pair is **BTC/USDT** (`BTCUSDT`), the most liquid Bitcoin market and a
-standard stand-in for BTC/USD — USDT tracks USD closely enough that the candles
-are visually identical to a true USD feed. To use a literal USD pair instead,
-swap the proxy to Coinbase (`https://api.exchange.coinbase.com/products/BTC-USD/candles`),
-though it offers fewer timeframes and smaller page sizes.
+- **Binance** `data-api.binance.vision` (`GET /api/v3/klines`) — primary;
+  every timeframe, high quality. Uses USDT pairs (e.g. `BTCUSDT`, `ZECUSDT`),
+  the most liquid markets and standard stand-ins for USD.
+- **Bitstamp** `GET /api/v2/ohlc/<pair>` — true USD, used to backfill the years
+  before the Binance pair existed (BTC reaches 2011; ZEC reaches ~2019).
+
+Instruments are defined in `lib/instruments.ts`, each mapping its id to the
+provider-specific symbols (`binance`, optional `bitstamp`). Add an entry there
+and it is immediately available to the API, the chart, and the console. The
+request shape is `GET /api/candles?symbol=<id>&interval=<tf>` (full history), or
+with `&limit=<n>` for a fast recent fetch (used by the live poll).
 
 ## Configuration console
 
@@ -41,7 +47,10 @@ can grow:
 
 - `help` — list commands · `help <cmd>` for usage
 - `theme list` / `theme set <name>` / `theme <name>` — change color theme
-  (`zen-dark`, `zen-light`, `midnight`, `matrix`); persisted to `localStorage`
+  (`zen-dark`, `zen-light`, `midnight`, `matrix`, `grey`, `light-grey`);
+  persisted to `localStorage`
+- `symbol list` / `symbol set <id>` / `symbol <id>` (aliases: `chart`, `pair`)
+  — switch the charted instrument (`btc`, `zec`); persisted to `localStorage`
 - `config show` — dump current settings
 - `clear`, `about`, `exit`
 - ↑/↓ history (persisted), Tab-completion, Esc to close
@@ -50,7 +59,8 @@ Add a command by appending to `lib/terminal/commands.ts` — the registry, help,
 and completion pick it up automatically. Commands receive a `ctx` with
 `print/clear/close` and a `config` API, and never touch React directly.
 Themes live in `lib/themes.ts` and drive both the page chrome (CSS variables)
-and the chart colors (lightweight-charts).
+and the chart colors (lightweight-charts). Instruments live in
+`lib/instruments.ts`, mapping each to its Binance/Bitstamp symbols.
 
 ## Getting started
 

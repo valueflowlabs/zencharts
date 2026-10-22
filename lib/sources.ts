@@ -14,10 +14,10 @@
 
 import type { Candle } from "./types";
 import type { TimeframeKey } from "./timeframes";
+import { getInstrument, type Instrument } from "./instruments";
 
 const BINANCE = "https://data-api.binance.vision";
 const BITSTAMP = "https://www.bitstamp.net";
-const SYMBOL = "BTCUSDT";
 const PAGE = 1000; // max rows per request on both providers
 const FETCH_TIMEOUT_MS = 12_000;
 
@@ -94,13 +94,14 @@ function toCandleBitstamp(o: any): Candle {
 
 // Paginate Binance backwards from now until we hit `max` or run out of history.
 async function fetchBinancePaged(
+  symbol: string,
   interval: TimeframeKey,
   max: number
 ): Promise<Candle[]> {
   const out: Candle[] = [];
   let endTime: number | undefined;
   while (out.length < max) {
-    let url = `${BINANCE}/api/v3/klines?symbol=${SYMBOL}&interval=${interval}&limit=${PAGE}`;
+    let url = `${BINANCE}/api/v3/klines?symbol=${symbol}&interval=${interval}&limit=${PAGE}`;
     if (endTime) url += `&endTime=${endTime}`;
     const rows = (await fetchJson(url)) as any[][];
     if (!rows?.length) break;
@@ -113,13 +114,14 @@ async function fetchBinancePaged(
 
 // Paginate Bitstamp backwards from now until we hit `max` or run out of history.
 async function fetchBitstampPaged(
+  pair: string,
   step: number,
   max: number
 ): Promise<Candle[]> {
   const out: Candle[] = [];
   let end: number | undefined;
   while (out.length < max) {
-    let url = `${BITSTAMP}/api/v2/ohlc/btcusd/?step=${step}&limit=${PAGE}`;
+    let url = `${BITSTAMP}/api/v2/ohlc/${pair}/?step=${step}&limit=${PAGE}`;
     if (end) url += `&end=${end}`;
     const json = await fetchJson(url);
     const ohlc = json?.data?.ohlc as any[] | undefined;
@@ -138,13 +140,17 @@ function stitch(primary: Candle[], backfill: Candle[], max: number): Candle[] {
   return dedupeSort([...backfill, ...primary]).slice(-max);
 }
 
-async function getDaily(max: number): Promise<Candle[]> {
-  const binance = await fetchBinancePaged("1d", max);
-  // Binance daily starts 2017; backfill the earlier years from Bitstamp.
+async function getDaily(inst: Instrument, max: number): Promise<Candle[]> {
+  const binance = await fetchBinancePaged(inst.binance, "1d", max);
+  // Binance daily starts later; backfill the earlier years from Bitstamp.
   let candles = binance;
-  if (binance.length < max) {
+  if (binance.length < max && inst.bitstamp) {
     try {
-      const bitstamp = await fetchBitstampPaged(BITSTAMP_STEP["1d"]!, max);
+      const bitstamp = await fetchBitstampPaged(
+        inst.bitstamp,
+        BITSTAMP_STEP["1d"]!,
+        max
+      );
       candles = stitch(binance, bitstamp, max);
     } catch {
       /* Bitstamp unavailable — Binance-only history is still useful */
@@ -179,24 +185,27 @@ function dailyToWeekly(daily: Candle[]): Candle[] {
   return [...weeks.values()].sort((a, b) => a.time - b.time);
 }
 
-async function buildHistory(interval: TimeframeKey): Promise<Candle[]> {
+async function buildHistory(
+  inst: Instrument,
+  interval: TimeframeKey
+): Promise<Candle[]> {
   const max = MAX_CANDLES[interval];
 
   if (interval === "1w") {
-    const daily = await getDaily(MAX_CANDLES["1d"]);
+    const daily = await getDaily(inst, MAX_CANDLES["1d"]);
     return dailyToWeekly(daily).slice(-max);
   }
   if (interval === "1d") {
-    return getDaily(max);
+    return getDaily(inst, max);
   }
 
-  // Intraday: Binance already holds more than the cap, so one source suffices.
-  const binance = await fetchBinancePaged(interval, max);
+  // Intraday: Binance usually holds more than the cap, so one source suffices.
+  const binance = await fetchBinancePaged(inst.binance, interval, max);
   let candles = binance;
   const step = BITSTAMP_STEP[interval];
-  if (binance.length < max && step) {
+  if (binance.length < max && step && inst.bitstamp) {
     try {
-      const bitstamp = await fetchBitstampPaged(step, max);
+      const bitstamp = await fetchBitstampPaged(inst.bitstamp, step, max);
       candles = stitch(binance, bitstamp, max);
     } catch {
       /* ignore backfill failure */
@@ -205,22 +214,29 @@ async function buildHistory(interval: TimeframeKey): Promise<Candle[]> {
   return dedupeSort(candles);
 }
 
-// Full history for a timeframe, cached briefly in memory.
-export async function getHistory(interval: TimeframeKey): Promise<Candle[]> {
-  const hit = cache.get(interval);
+// Full history for an instrument + timeframe, cached briefly in memory.
+export async function getHistory(
+  symbol: string,
+  interval: TimeframeKey
+): Promise<Candle[]> {
+  const inst = getInstrument(symbol);
+  const key = `${inst.id}:${interval}`;
+  const hit = cache.get(key);
   if (hit && Date.now() - hit.at < TTL_MS) return hit.data;
-  const data = await buildHistory(interval);
-  cache.set(interval, { at: Date.now(), data });
+  const data = await buildHistory(inst, interval);
+  cache.set(key, { at: Date.now(), data });
   return data;
 }
 
 // Lightweight recent-candles fetch used by the client's live poll. Binance
 // supports every timeframe natively (including 1w), so one quick call does it.
 export async function getRecent(
+  symbol: string,
   interval: TimeframeKey,
   limit: number
 ): Promise<Candle[]> {
-  const url = `${BINANCE}/api/v3/klines?symbol=${SYMBOL}&interval=${interval}&limit=${limit}`;
+  const inst = getInstrument(symbol);
+  const url = `${BINANCE}/api/v3/klines?symbol=${inst.binance}&interval=${interval}&limit=${limit}`;
   const rows = (await fetchJson(url)) as any[][];
   return rows.map(toCandleBinance);
 }

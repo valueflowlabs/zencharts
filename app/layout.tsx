@@ -3,7 +3,7 @@ import { themeBootScript } from "@/lib/themes";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "zencharts — BTC/USD",
+  title: "zencharts",
   description: "Just the chart. Nothing else.",
 };
 
