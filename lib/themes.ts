@@ -151,6 +151,31 @@ export const THEMES: Record<string, Theme> = {
       down: "#6b6b70",
     },
   },
+  "light-grey": {
+    name: "light-grey",
+    label: "Light Grey",
+    scheme: "light",
+    page: {
+      background: "#e3e3e6",
+      text: "#7a7a80",
+      textStrong: "#202024",
+      panel: "rgba(255,255,255,0.75)",
+      border: "rgba(0,0,0,0.12)",
+      accent: "#3a3a40",
+      accentText: "#e3e3e6",
+      danger: "#c0392b",
+    },
+    // Monochrome candles: a dark grey for up (prominent on the light bg),
+    // a lighter grey for down.
+    chart: {
+      background: "#e3e3e6",
+      text: "#7a7a80",
+      grid: "rgba(0,0,0,0.05)",
+      border: "rgba(0,0,0,0.1)",
+      up: "#3f3f45",
+      down: "#9b9ba2",
+    },
+  },
 };
 
 export function getTheme(name: string): Theme {
