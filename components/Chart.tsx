@@ -27,12 +27,12 @@ type Status = "loading" | "ready" | "error";
 
 async function fetchCandles(
   interval: TimeframeKey,
-  limit: number,
+  limit: number | undefined,
   signal?: AbortSignal
 ): Promise<Candle[]> {
-  const res = await fetch(`/api/candles?interval=${interval}&limit=${limit}`, {
-    signal,
-  });
+  // No `limit` -> full multi-source history; a `limit` -> fast recent fetch.
+  const qs = limit === undefined ? "" : `&limit=${limit}`;
+  const res = await fetch(`/api/candles?interval=${interval}${qs}`, { signal });
   if (!res.ok) throw new Error(`Request failed (${res.status})`);
   const data = (await res.json()) as { candles: Candle[] };
   return data.candles;
@@ -100,7 +100,7 @@ export default function Chart({ timeframe }: { timeframe: TimeframeKey }) {
 
     setStatus("loading");
 
-    fetchCandles(timeframe, 1000, controller.signal)
+    fetchCandles(timeframe, undefined, controller.signal)
       .then((candles) => {
         if (cancelled) return;
         series.setData(
