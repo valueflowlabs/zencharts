@@ -33,6 +33,25 @@ are visually identical to a true USD feed. To use a literal USD pair instead,
 swap the proxy to Coinbase (`https://api.exchange.coinbase.com/products/BTC-USD/candles`),
 though it offers fewer timeframes and smaller page sizes.
 
+## Configuration console
+
+A minimal in-app terminal (bottom-right button, or the `` ` `` key) configures
+the app at runtime. It is a small command engine, not a one-off toggle, so it
+can grow:
+
+- `help` — list commands · `help <cmd>` for usage
+- `theme list` / `theme set <name>` / `theme <name>` — change color theme
+  (`zen-dark`, `zen-light`, `midnight`, `matrix`); persisted to `localStorage`
+- `config show` — dump current settings
+- `clear`, `about`, `exit`
+- ↑/↓ history (persisted), Tab-completion, Esc to close
+
+Add a command by appending to `lib/terminal/commands.ts` — the registry, help,
+and completion pick it up automatically. Commands receive a `ctx` with
+`print/clear/close` and a `config` API, and never touch React directly.
+Themes live in `lib/themes.ts` and drive both the page chrome (CSS variables)
+and the chart colors (lightweight-charts).
+
 ## Getting started
 
 ```bash

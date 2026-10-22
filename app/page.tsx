@@ -4,6 +4,8 @@ import { Suspense, useCallback } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import Chart from "@/components/Chart";
 import TimeframeSelector from "@/components/TimeframeSelector";
+import Terminal from "@/components/Terminal";
+import { ConfigProvider } from "@/lib/config/ConfigContext";
 import {
   DEFAULT_TIMEFRAME,
   isValidTimeframe,
@@ -41,8 +43,11 @@ function ZenChart() {
 export default function Home() {
   // useSearchParams needs a Suspense boundary during prerender.
   return (
-    <Suspense fallback={<main className="zen" />}>
-      <ZenChart />
-    </Suspense>
+    <ConfigProvider>
+      <Suspense fallback={<main className="zen" />}>
+        <ZenChart />
+      </Suspense>
+      <Terminal />
+    </ConfigProvider>
   );
 }
