@@ -27,6 +27,21 @@ const banner = (): OutputLine[] => [
   },
 ];
 
+// Render any https:// URL in an output line as a clickable link.
+function linkify(text: string): React.ReactNode {
+  const parts = text.split(/(https:\/\/\S+)/);
+  if (parts.length === 1) return text;
+  return parts.map((p, i) =>
+    i % 2 ? (
+      <a key={i} href={p} target="_blank" rel="noopener noreferrer">
+        {p}
+      </a>
+    ) : (
+      p
+    )
+  );
+}
+
 export default function Terminal() {
   const {
     themeName,
@@ -294,7 +309,7 @@ export default function Terminal() {
           <div className="term-output" ref={outputRef}>
             {lines.map((l) => (
               <div key={l.id} className={`term-line term-line--${l.kind}`}>
-                {l.text}
+                {linkify(l.text)}
               </div>
             ))}
           </div>

@@ -77,9 +77,14 @@ export default function Chart({ timeframe }: { timeframe: TimeframeKey }) {
     if (!containerRef.current) return;
     const c = themeRef.current.chart;
 
+    // TradingView Lightweight Charts™
+    // Copyright (c) 2025 TradingView, Inc. https://www.tradingview.com/
+    // The on-chart logo is off; the required link to tradingview.com lives in
+    // the console's `about` command instead.
     const chart = createChart(containerRef.current, {
       autoSize: true,
       layout: {
+        attributionLogo: false,
         background: { type: ColorType.Solid, color: c.background },
         textColor: c.text,
         fontFamily:

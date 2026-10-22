@@ -186,6 +186,10 @@ const about: Command = {
     ctx.print("zencharts — zen-mode crypto/USD charts", "out");
     ctx.print("instruments: BTC, ZEC · data: Binance + Bitstamp", "info");
     ctx.print("this console configures the app — type 'help'", "info");
+    ctx.print(
+      "charts: TradingView Lightweight Charts™ — https://www.tradingview.com/",
+      "info"
+    );
   },
 };
 

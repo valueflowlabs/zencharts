@@ -221,6 +221,11 @@ body {
   word-break: break-word;
 }
 
+.term-line a {
+  color: inherit;
+  text-underline-offset: 2px;
+}
+
 .term-line--out {
   color: var(--fg-strong);
 }
