@@ -20,7 +20,9 @@ export default function RootLayout({
   children: React.ReactNode;
 }) {
   return (
-    <html lang="en">
+    // The boot script sets data-theme + CSS vars on <html> before hydration,
+    // so its attributes intentionally differ from the server render.
+    <html lang="en" suppressHydrationWarning>
       <body>
         {/* Apply the saved theme before paint to avoid a flash. */}
         <script dangerouslySetInnerHTML={{ __html: themeBootScript() }} />
