@@ -33,4 +33,13 @@ export interface Command {
   summary: string;
   usage?: string;
   run: (ctx: CommandContext) => void | Promise<void>;
+  // Candidate completions for the argument currently being typed. `preceding`
+  // are the already-completed args (after the command name); the engine filters
+  // the returned list by the in-progress token's prefix. `commands` is the full
+  // registry (so e.g. `help` can complete command names).
+  complete?: (
+    preceding: string[],
+    config: ConfigApi,
+    commands: Command[]
+  ) => string[];
 }

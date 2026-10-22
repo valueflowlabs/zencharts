@@ -27,6 +27,8 @@ const help: Command = {
     }
     ctx.print("tip: Tab completes · ↑/↓ history · ` or Esc toggles", "info");
   },
+  complete: (preceding, _config, commands) =>
+    preceding.length === 0 ? commands.map((c) => c.name) : [],
 };
 
 const theme: Command = {
@@ -55,6 +57,12 @@ const theme: Command = {
       ok ? "out" : "err"
     );
   },
+  complete: (preceding, config) => {
+    const names = config.themes.map((t) => t.name);
+    if (preceding.length === 0) return ["list", "set", ...names];
+    if (preceding[0] === "set" && preceding.length === 1) return names;
+    return [];
+  },
 };
 
 const config: Command = {
@@ -67,6 +75,7 @@ const config: Command = {
     ctx.print("configuration:", "info");
     ctx.print(`  theme = ${ctx.config.themeName}`, "out");
   },
+  complete: (preceding) => (preceding.length === 0 ? ["show"] : []),
 };
 
 const clear: Command = {

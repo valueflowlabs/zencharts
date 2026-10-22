@@ -21,6 +21,51 @@ export function commandNames(): string[] {
   return [...byName.keys()].sort();
 }
 
+export interface CompletionResult {
+  items: string[]; // candidates for the current token, prefix-filtered
+  token: string; // the in-progress token being completed
+  usage?: string; // usage of the identified command, for a hint line
+}
+
+// Compute completions for a raw input line and cursor-at-end. Pure function of
+// (input, config) so the UI can derive suggestions reactively.
+export function getCompletions(
+  input: string,
+  config: ConfigApi
+): CompletionResult {
+  const trimmed = input.replace(/^\s+/, "");
+  const endsWithSpace = /\s$/.test(input) && trimmed.length > 0;
+  const tokens = trimmed.length ? trimmed.split(/\s+/) : [];
+
+  let token: string;
+  let preceding: string[];
+  if (endsWithSpace) {
+    token = "";
+    preceding = tokens;
+  } else {
+    token = tokens[tokens.length - 1] ?? "";
+    preceding = tokens.slice(0, -1);
+  }
+
+  let candidates: string[];
+  let usage: string | undefined;
+  if (preceding.length === 0) {
+    candidates = commandNames();
+  } else {
+    const cmd = findCommand(preceding[0]);
+    usage = cmd?.usage;
+    candidates = cmd?.complete
+      ? cmd.complete(preceding.slice(1), config, COMMANDS)
+      : [];
+  }
+
+  const items = [...new Set(candidates)]
+    .filter((c) => c.startsWith(token))
+    .sort();
+
+  return { items, token, usage };
+}
+
 export interface RunDeps {
   print: (text: string, kind?: OutputKind) => void;
   clear: () => void;
