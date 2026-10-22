@@ -11,6 +11,7 @@ import {
 } from "lightweight-charts";
 import type { TimeframeKey } from "@/lib/timeframes";
 import type { Candle } from "@/lib/types";
+import { useConfig } from "@/lib/config/ConfigContext";
 
 // How often we refresh the latest candle so the chart feels "live",
 // keyed by timeframe. Lower timeframes update more often.
@@ -44,38 +45,45 @@ export default function Chart({ timeframe }: { timeframe: TimeframeKey }) {
   const seriesRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
   const [status, setStatus] = useState<Status>("loading");
 
-  // Create the chart once, on mount.
+  const { theme } = useConfig();
+  // Keep the latest theme reachable from the mount-only effect without making
+  // the chart re-create on every theme change (that is handled separately).
+  const themeRef = useRef(theme);
+  themeRef.current = theme;
+
+  // Create the chart once, on mount (colored from the current theme).
   useEffect(() => {
     if (!containerRef.current) return;
+    const c = themeRef.current.chart;
 
     const chart = createChart(containerRef.current, {
       autoSize: true,
       layout: {
-        background: { type: ColorType.Solid, color: "#0a0a0a" },
-        textColor: "#5a5a5a",
+        background: { type: ColorType.Solid, color: c.background },
+        textColor: c.text,
         fontFamily:
           "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
       },
       grid: {
-        vertLines: { color: "rgba(255,255,255,0.03)" },
-        horzLines: { color: "rgba(255,255,255,0.03)" },
+        vertLines: { color: c.grid },
+        horzLines: { color: c.grid },
       },
       crosshair: { mode: CrosshairMode.Normal },
-      rightPriceScale: { borderColor: "rgba(255,255,255,0.06)" },
+      rightPriceScale: { borderColor: c.border },
       timeScale: {
-        borderColor: "rgba(255,255,255,0.06)",
+        borderColor: c.border,
         timeVisible: true,
         secondsVisible: false,
       },
     });
 
     const series = chart.addCandlestickSeries({
-      upColor: "#26a69a",
-      downColor: "#ef5350",
-      borderUpColor: "#26a69a",
-      borderDownColor: "#ef5350",
-      wickUpColor: "#26a69a",
-      wickDownColor: "#ef5350",
+      upColor: c.up,
+      downColor: c.down,
+      borderUpColor: c.up,
+      borderDownColor: c.down,
+      wickUpColor: c.up,
+      wickDownColor: c.down,
     });
 
     chartRef.current = chart;
@@ -87,6 +95,34 @@ export default function Chart({ timeframe }: { timeframe: TimeframeKey }) {
       seriesRef.current = null;
     };
   }, []);
+
+  // Recolor the live chart whenever the theme changes.
+  useEffect(() => {
+    const chart = chartRef.current;
+    const series = seriesRef.current;
+    if (!chart || !series) return;
+    const c = theme.chart;
+    chart.applyOptions({
+      layout: {
+        background: { type: ColorType.Solid, color: c.background },
+        textColor: c.text,
+      },
+      grid: {
+        vertLines: { color: c.grid },
+        horzLines: { color: c.grid },
+      },
+      rightPriceScale: { borderColor: c.border },
+      timeScale: { borderColor: c.border },
+    });
+    series.applyOptions({
+      upColor: c.up,
+      downColor: c.down,
+      borderUpColor: c.up,
+      borderDownColor: c.down,
+      wickUpColor: c.up,
+      wickDownColor: c.down,
+    });
+  }, [theme]);
 
   // (Re)load data whenever the timeframe changes, then poll the last candle.
   useEffect(() => {
