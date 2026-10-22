@@ -52,6 +52,37 @@ body {
   letter-spacing: 0.04em;
 }
 
+/* Small spinner shown in the top-left while history is fetching. The 0.15s
+   appear-delay keeps it from flashing on instant (cached) timeframe switches. */
+.chart-spinner {
+  position: absolute;
+  top: 14px;
+  left: 14px;
+  width: 14px;
+  height: 14px;
+  border: 2px solid var(--border);
+  border-top-color: var(--fg-strong);
+  border-radius: 50%;
+  z-index: 15;
+  opacity: 0;
+  pointer-events: none;
+  animation:
+    chart-spin 0.7s linear infinite,
+    chart-spinner-in 0.2s ease 0.15s forwards;
+}
+
+@keyframes chart-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes chart-spinner-in {
+  to {
+    opacity: 0.8;
+  }
+}
+
 /* Minimal timeframe bar — floats bottom-center, fades out until hovered. */
 .tf-bar {
   position: fixed;

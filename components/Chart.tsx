@@ -171,7 +171,9 @@ export default function Chart({ timeframe }: { timeframe: TimeframeKey }) {
   return (
     <div className="chart-wrap">
       <div ref={containerRef} className="chart" />
-      {status === "loading" && <div className="chart-overlay">loading…</div>}
+      {status === "loading" && (
+        <div className="chart-spinner" role="status" aria-label="Loading data" />
+      )}
       {status === "error" && (
         <div className="chart-overlay">
           couldn’t reach market data — retrying on next switch
