@@ -1,0 +1,24 @@
+{
+  "name": "zencharts",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Zen-mode BTC/USD candlestick charts. Just the chart. Nothing else.",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "next lint"
+  },
+  "dependencies": {
+    "lightweight-charts": "^4.2.3",
+    "next": "^16.4.2",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0",
+    "typescript": "^5.5.3"
+  }
+}
