@@ -127,6 +127,30 @@ export const THEMES: Record<string, Theme> = {
       down: "#0aa64a",
     },
   },
+  grey: {
+    name: "grey",
+    label: "Grey",
+    scheme: "dark",
+    page: {
+      background: "#242426",
+      text: "#8a8a8f",
+      textStrong: "#e4e4e7",
+      panel: "rgba(52,52,56,0.78)",
+      border: "rgba(255,255,255,0.1)",
+      accent: "#b4b4ba",
+      accentText: "#242426",
+      danger: "#e57373",
+    },
+    // Monochrome candles: a lighter grey for up, darker for down.
+    chart: {
+      background: "#242426",
+      text: "#8a8a8f",
+      grid: "rgba(255,255,255,0.04)",
+      border: "rgba(255,255,255,0.09)",
+      up: "#d4d4d8",
+      down: "#6b6b70",
+    },
+  },
 };
 
 export function getTheme(name: string): Theme {
