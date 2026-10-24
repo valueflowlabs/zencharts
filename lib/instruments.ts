@@ -7,10 +7,17 @@ export interface Instrument {
   label: string; // display label (e.g. "BTC/USD")
   binance: string; // Binance symbol (e.g. "BTCUSDT")
   bitstamp?: string; // optional Bitstamp pair for deep-history backfill
+  deribit?: string; // Deribit currency with a DVOL index (BTC, ETH only)
 }
 
 export const INSTRUMENTS: Record<string, Instrument> = {
-  btc: { id: "btc", label: "BTC/USD", binance: "BTCUSDT", bitstamp: "btcusd" },
+  btc: {
+    id: "btc",
+    label: "BTC/USD",
+    binance: "BTCUSDT",
+    bitstamp: "btcusd",
+    deribit: "BTC",
+  },
   zec: { id: "zec", label: "ZEC/USD", binance: "ZECUSDT", bitstamp: "zecusd" },
 };
 

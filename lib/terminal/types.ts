@@ -1,6 +1,8 @@
 // Terminal command engine types. Deliberately free of any React/DOM imports so
 // the command layer stays testable and the UI is just one possible host.
 
+import type { Overlays } from "../config/overlays";
+
 export type OutputKind = "input" | "out" | "info" | "err";
 
 export interface OutputLine {
@@ -21,6 +23,8 @@ export interface ConfigApi {
   setMomentum: (on: boolean) => void;
   momentumLookback: number;
   setMomentumLookback: (n: number) => boolean;
+  overlays: Overlays;
+  setOverlays: (patch: Partial<Overlays>) => boolean;
 }
 
 // Everything a command needs to do its job, injected by the host.

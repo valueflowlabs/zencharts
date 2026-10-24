@@ -15,6 +15,19 @@ into the background, and switch instruments from the configuration console.
 - **Momentum indicator** (optional, off by default) — % change in close over
   the last N bars, as a quiet histogram under the candles. Toggle it from the
   console; see "Research" below for why momentum.
+- **Forecasting tools** (all off by default, toggled from the console). They
+  show ranges and fragility rather than price targets, and each one has a
+  `score` sub-command that tests it on our own history against a naive
+  baseline. See `reports/Bitcoin price prediction evidence.md` for the
+  evidence behind them:
+  - **Volatility cone** — 80% and 95% bands for the next N bars (EWMA,
+    GARCH(1,1) or Deribit-DVOL volatility), centred on today's price.
+  - **Power-law corridor** — log-log trend fit with a 2.5–97.5% residual band,
+    extended a year forward (BTC, 1D/1W; switches the price axis to log).
+  - **Funding pane** — Binance perpetual funding rate, annualised.
+  - **DVOL pane** — Deribit 30-day implied vol next to trailing realised vol
+    (BTC).
+  - **Backtest** — MA or 12-month momentum trend filter vs buy-and-hold.
 - **Free, good-quality data** — Binance public market-data endpoint, no API key.
 
 ## Stack
@@ -35,6 +48,16 @@ and stitched server-side for maximum history:
   the most liquid markets and standard stand-ins for USD.
 - **Bitstamp** `GET /api/v2/ohlc/<pair>` — true USD, used to backfill the years
   before the Binance pair existed (BTC reaches 2011; ZEC reaches ~2019).
+
+The forecasting panes use `GET /api/series?id=funding|dvol&symbol=<id>`
+(`lib/series.ts`), cached in memory for 30 minutes:
+
+- **Binance USDⓈ-M futures** `fapi.binance.com/fapi/v1/fundingRate` — funding
+  history from 2019-09. `fapi` refuses some regions, including US cloud IPs:
+  if deployed on Vercel, set the function region to the EU (e.g. `fra1`).
+- **Deribit** `public/get_volatility_index_data` — daily DVOL from 2021-03,
+  BTC only. Each daily close is stamped at the end of its day, so nothing is
+  shown before it was known.
 
 Instruments are defined in `lib/instruments.ts`, each mapping its id to the
 provider-specific symbols (`binance`, optional `bitstamp`). Add an entry there
@@ -57,6 +80,20 @@ can grow:
 - `momentum` / `momentum on` / `momentum off` / `momentum toggle` /
   `momentum lookback <n>` (alias: `mom`) — show or hide the momentum histogram
   and set its lookback in bars (2–500, default 20); persisted to `localStorage`
+- `cone on|off` / `cone model ewma|garch|dvol` / `cone horizon <bars>` /
+  `cone score [days]` — volatility cone; `score` reports how often the close
+  landed outside the 80%/95% bands, walking forward over daily history
+- `powerlaw on|off` / `powerlaw score` (alias: `pl`) — power-law corridor;
+  `powerlaw` alone prints today's fair value; `score` compares 12-month
+  forecasts (refitted on past data only) with a random walk
+- `funding on|off` / `funding score` — funding pane; `score` checks whether
+  top-decile funding days came before deeper 30-day drawdowns, before and after
+  2024
+- `dvol on|off` / `dvol score` — DVOL pane; `score` checks whether DVOL beats
+  trailing realised vol at forecasting the next 30 days
+- `backtest [ma [n] | tsmom [days]] [fee <bp>]` (alias: `bt`, also `ma200`,
+  `tsmom365`) — long/flat trend filter vs buy-and-hold on daily closes, over
+  all history, 2014+, 2017+ and 2024+; the signal at close t is held from t+1
 - `config show` — dump current settings
 - `clear`, `about`, `exit`
 - ↑/↓ history (persisted), Tab-completion, Esc to close
@@ -90,11 +127,24 @@ app/
   page.tsx              # zen page: <Chart> + <TimeframeSelector>
   globals.css           # full-bleed dark styling + fading timeframe bar
   api/candles/route.ts  # server-side proxy -> Binance klines, normalized
+  api/series/route.ts   # server-side proxy -> funding rate, DVOL
 components/
-  Chart.tsx             # lightweight-charts candlestick + live polling
+  Chart.tsx             # candles, overlays, stacked panes + live polling
   TimeframeSelector.tsx # minimal timeframe switcher
+  Terminal.tsx          # configuration console
 lib/
-  indicators/momentum.ts # time-series momentum (% change over N bars)
+  indicators/momentum.ts    # time-series momentum (% change over N bars)
+  indicators/cone.ts        # volatility cone: EWMA, GARCH(1,1), DVOL + score
+  indicators/powerlaw.ts    # power-law corridor + walk-forward score
+  indicators/derivatives.ts # funding / DVOL helpers + their scores
+  indicators/align.ts       # snap external series onto the chart's bars
+  indicators/stats.ts       # small stats helpers (OLS, quantiles, DM test)
+  backtest.ts           # trend-filter backtest vs buy-and-hold
+  config/overlays.ts    # forecasting overlay settings
+  data.ts               # browser fetchers for the API routes
+  series.ts             # funding + DVOL sources (server)
+  sources.ts            # candle sources (server)
+  time.ts               # bar sizes, week/bar bucketing
   timeframes.ts         # allowed timeframes (single source of truth)
   types.ts              # Candle shape
 ```
@@ -141,11 +191,11 @@ against our own history before trusting any of them.
 | 1 | **Volume** | Whether a move has participation behind it; several other indicators need it | Already fetched: Binance kline `row[5]`, Bitstamp `volume`. `Candle` currently drops it | Tiny | Thin histogram at the bottom |
 | 2 | **Moving averages** (200-day, 200-week, 50/200 cross) | Trend and momentum, the best-supported signal | Computed from existing candles | Small | Thin line overlays |
 | 3 | **RSI / momentum** | Overbought/oversold, momentum | Computed from existing candles | Small | Optional lower pane |
-| 4 | **Power-law trend band** (log price vs. log of days since 2009) | Where price sits against its long-run trend | Fitted to daily data back to 2011 | Small | 1D/1W overlay |
+| 4 | **Power-law trend band** (log price vs. log of days since 2009) | Where price sits against its long-run trend | Fitted to daily data back to 2011 | Small | 1D/1W overlay. _Implemented:_ `powerlaw on` |
 | 5 | **Halving countdown and cycle position** | Where we are in the 4-year cycle | Block height from `mempool.space` | Small | One line in the console |
 | 6 | **Fear & Greed index** | Crowd sentiment, useful mainly at extremes | `api.alternative.me/fng/?limit=0` (full daily history) | Small | Console readout or a colour strip |
-| 7 | **Funding rate and open interest** | How crowded leveraged positions are; squeeze risk | `fapi.binance.com`, with Bybit and OKX as fallbacks | Medium | Lower pane |
-| 8 | **Implied volatility (Deribit DVOL)** | How big a move the options market expects | Deribit public API | Medium | Lower pane |
+| 7 | **Funding rate and open interest** | How crowded leveraged positions are; squeeze risk | `fapi.binance.com`, with Bybit and OKX as fallbacks | Medium | Lower pane. _Implemented (funding only):_ `funding on` |
+| 8 | **Implied volatility (Deribit DVOL)** | How big a move the options market expects | Deribit public API | Medium | Lower pane. _Implemented:_ `dvol on` |
 | 9 | **MVRV, active addresses, market cap** | Valuation against investors' average cost basis (cycle tops and bottoms) | CoinMetrics Community API; MVRV is in the free tier | Medium | 1D/1W pane |
 | 10 | **Hashrate and difficulty** | Miner health; "hash ribbons" signal | `mempool.space`, `api.blockchain.info` | Medium | Lower pane |
 | 11 | **Coinbase premium** | US spot demand (Coinbase BTC-USD price vs. Binance BTC-USDT) | `api.exchange.coinbase.com` | Small | Line |

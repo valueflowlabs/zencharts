@@ -15,6 +15,7 @@
 import type { Candle } from "./types";
 import type { TimeframeKey } from "./timeframes";
 import { getInstrument, type Instrument } from "./instruments";
+import { weekStartUTC } from "./time";
 
 const BINANCE = "https://data-api.binance.vision";
 const BITSTAMP = "https://www.bitstamp.net";
@@ -43,13 +44,11 @@ const BITSTAMP_STEP: Partial<Record<TimeframeKey, number>> = {
   "1d": 86400,
 };
 
-const DAY = 86400;
-
 // ---- tiny in-memory cache so flipping between timeframes stays snappy -------
 const TTL_MS = 10 * 60 * 1000;
 const cache = new Map<string, { at: number; data: Candle[] }>();
 
-async function fetchJson(url: string): Promise<any> {
+export async function fetchJson(url: string): Promise<any> {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), FETCH_TIMEOUT_MS);
   try {
@@ -160,15 +159,6 @@ async function getDaily(inst: Instrument, max: number): Promise<Candle[]> {
 }
 
 // Aggregate a daily series into weekly candles anchored on Monday 00:00 UTC.
-function weekStartUTC(timeSec: number): number {
-  const d = new Date(timeSec * 1000);
-  const dow = d.getUTCDay(); // 0=Sun..6=Sat
-  const sinceMonday = dow === 0 ? 6 : dow - 1;
-  const midnight =
-    Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()) / 1000;
-  return midnight - sinceMonday * DAY;
-}
-
 function dailyToWeekly(daily: Candle[]): Candle[] {
   const weeks = new Map<number, Candle>();
   for (const d of daily) {

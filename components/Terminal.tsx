@@ -54,6 +54,8 @@ export default function Terminal() {
     setMomentum,
     momentumLookback,
     setMomentumLookback,
+    overlays,
+    setOverlays,
   } = useConfig();
 
   const [open, setOpen] = useState(false);
@@ -88,6 +90,8 @@ export default function Terminal() {
       setMomentum,
       momentumLookback,
       setMomentumLookback,
+      overlays,
+      setOverlays,
     }),
     [
       themeName,
@@ -100,6 +104,8 @@ export default function Terminal() {
       setMomentum,
       momentumLookback,
       setMomentumLookback,
+      overlays,
+      setOverlays,
     ]
   );
 

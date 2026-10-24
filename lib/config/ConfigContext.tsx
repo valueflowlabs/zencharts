@@ -26,6 +26,12 @@ import {
   DEFAULT_MOMENTUM_LOOKBACK,
   isValidLookback,
 } from "@/lib/indicators/momentum";
+import {
+  DEFAULT_OVERLAYS,
+  patchOverlays,
+  readOverlays,
+  type Overlays,
+} from "@/lib/config/overlays";
 
 // The app's configuration surface, shaped so new settings can be added here and
 // exposed to the terminal without churn.
@@ -41,6 +47,8 @@ export interface ConfigValue {
   setMomentum: (on: boolean) => void;
   momentumLookback: number; // bars
   setMomentumLookback: (n: number) => boolean; // false if out of range
+  overlays: Overlays; // forecasting overlays and panes
+  setOverlays: (patch: Partial<Overlays>) => boolean; // false if invalid
 }
 
 const ConfigContext = createContext<ConfigValue | null>(null);
@@ -50,6 +58,7 @@ interface Saved {
   symbol: string;
   momentum: boolean;
   momentumLookback: number;
+  overlays: Overlays;
 }
 
 function readSaved(): Saved {
@@ -58,6 +67,7 @@ function readSaved(): Saved {
     symbol: DEFAULT_SYMBOL,
     momentum: false,
     momentumLookback: DEFAULT_MOMENTUM_LOOKBACK,
+    overlays: DEFAULT_OVERLAYS,
   };
   if (typeof window === "undefined") return fallback;
   try {
@@ -69,6 +79,7 @@ function readSaved(): Saved {
       momentumLookback: isValidLookback(c?.momentumLookback)
         ? c.momentumLookback
         : DEFAULT_MOMENTUM_LOOKBACK,
+      overlays: readOverlays(c?.overlays),
     };
   } catch {
     return fallback;
@@ -93,6 +104,7 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
   const [momentumLookback, setLookbackState] = useState<number>(
     saved.momentumLookback
   );
+  const [overlays, setOverlaysState] = useState<Overlays>(saved.overlays);
 
   const theme = getTheme(themeName);
 
@@ -101,12 +113,18 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
     try {
       localStorage.setItem(
         STORAGE_KEY,
-        JSON.stringify({ themeName, symbol, momentum, momentumLookback })
+        JSON.stringify({
+          themeName,
+          symbol,
+          momentum,
+          momentumLookback,
+          overlays,
+        })
       );
     } catch {
       /* ignore quota/availability errors */
     }
-  }, [themeName, theme, symbol, momentum, momentumLookback]);
+  }, [themeName, theme, symbol, momentum, momentumLookback, overlays]);
 
   const setTheme = useCallback((name: string): boolean => {
     if (!THEMES[name]) return false;
@@ -126,6 +144,16 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
     return true;
   }, []);
 
+  const setOverlays = useCallback(
+    (patch: Partial<Overlays>): boolean => {
+      const next = patchOverlays(overlays, patch);
+      if (!next) return false;
+      setOverlaysState(next);
+      return true;
+    },
+    [overlays]
+  );
+
   const value = useMemo<ConfigValue>(
     () => ({
       themeName,
@@ -139,6 +167,8 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
       setMomentum,
       momentumLookback,
       setMomentumLookback,
+      overlays,
+      setOverlays,
     }),
     [
       themeName,
@@ -149,6 +179,8 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
       momentum,
       momentumLookback,
       setMomentumLookback,
+      overlays,
+      setOverlays,
     ]
   );
 
