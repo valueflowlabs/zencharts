@@ -52,12 +52,12 @@ body {
   letter-spacing: 0.04em;
 }
 
-/* Small spinner shown in the top-left while history is fetching. The 0.15s
+/* Small spinner shown in the center while history is fetching. The 0.15s
    appear-delay keeps it from flashing on instant (cached) timeframe switches. */
 .chart-spinner {
   position: absolute;
-  top: 14px;
-  left: 14px;
+  inset: 0;
+  margin: auto;
   width: 14px;
   height: 14px;
   border: 2px solid var(--border);
