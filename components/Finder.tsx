@@ -303,7 +303,11 @@ function Detail({
             <Stat k="buyers/sellers 1h" v={`${t.market.flow.h1.buyers ?? "—"}/${t.market.flow.h1.sellers ?? "—"}`} />
           </div>
 
-          <FinderChart candles={rep.data!.candles} />
+          <FinderChart
+            candles={rep.data!.candles}
+            network={CHAINS[chain].gt}
+            pool={t.market.pairAddress}
+          />
 
           <div className="fd-links">
             <a href={t.market.url} target="_blank" rel="noreferrer">dexscreener</a>
