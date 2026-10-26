@@ -62,7 +62,7 @@ const BONDING_CURVE_DEXES = new Set([
 ]);
 
 const normDex = (id: string) =>
-  id.toLowerCase().replace(/-(solana|base|bsc|eth)$/, "").replace(/[^a-z0-9]/g, "");
+  id.toLowerCase().replace(/-(solana|base|bsc|eth|robinhood)$/, "").replace(/[^a-z0-9]/g, "");
 
 export const normAddr = (chain: ChainId, a: string) =>
   chain === "solana" ? a : a.toLowerCase();
@@ -323,7 +323,7 @@ export async function analyzeToken(
   const socials = socialsOf(ds);
   const [sec, hp, candles] = await Promise.all([
     securityFor(chainId, [{ address, market }]),
-    chain.goplus ? honeypotSim(chain.goplus, address) : Promise.resolve(null),
+    chain.honeypot ? honeypotSim(chain.goplus!, address) : Promise.resolve(null),
     gtOhlcv(chain.gt, market.pairAddress),
   ]);
   const checks = [
@@ -331,7 +331,7 @@ export async function analyzeToken(
     ...activityChecks(market),
     ...(sec.checks.get(address) ?? uncheckedSecurity()),
   ];
-  if (chain.goplus) checks.push(honeypotCheck(hp));
+  if (chain.honeypot) checks.push(honeypotCheck(hp));
 
   const token = finalize(
     {
@@ -345,7 +345,7 @@ export async function analyzeToken(
       market,
       socials,
       securitySource: sec.checks.has(address)
-        ? sec.source + (chain.goplus ? "+honeypot.is" : "")
+        ? sec.source + (chain.honeypot ? "+honeypot.is" : "")
         : null,
       checks,
     },

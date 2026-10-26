@@ -12,10 +12,10 @@ The finder is a **filter, not a predictor**. The research behind it (`reports/So
 | DexScreener | `/token-profiles/latest/v1`, `/token-boosts/latest/v1`, `/tokens/v1/{chain}/{≤30 addresses}` | Discovery of tokens whose team **paid** for a profile or boost. Per-pair price, liquidity, FDV/market cap, buy/sell counts, volume, price change, pair creation time, linked socials. |
 | RugCheck (Solana) | `/v1/tokens/{mint}/report` | Mint and freeze authority, top holders with insider flags, known pool and locker accounts, market vaults, LP lock %, creator balance, holder count, transfer fee, mutable metadata, `rugged` flag, RugCheck's own risk list. |
 | GoPlus (Solana) | `/api/v1/solana/token_security` | Token-2022 levers: balance-mutable authority, transfer hook, default account state, closable mint, non-transferable. |
-| GoPlus (EVM) | `/api/v1/token_security/{chainId}` | Honeypot flags, buy and sell tax, owner backdoors, verified source, owner trading levers, mintable, proxy, creator history, top holders, LP holders and lock status, holder count. |
-| Honeypot.is (EVM) | `/v2/IsHoneypot` | A real buy-then-sell **simulation** on a fork (detail view only). |
+| GoPlus (EVM: Base, BNB, Ethereum, Robinhood) | `/api/v1/token_security/{chainId}` | Honeypot flags, buy and sell tax, owner backdoors, verified source, owner trading levers, mintable, proxy, creator history, top holders, LP holders and lock status, holder count. |
+| Honeypot.is (Base, BNB, Ethereum) | `/v2/IsHoneypot` | A real buy-then-sell **simulation** on a fork (detail view only). |
 
-Chains: Solana, Base, BNB Chain and Ethereum. GeckoTerminal network ids are `solana`, `base`, `bsc` and `eth`; GoPlus chain ids are 8453, 56 and 1.
+Chains: Solana, Base, BNB Chain, Ethereum and Robinhood Chain (Robinhood's Arbitrum Orbit L2). GeckoTerminal network ids are `solana`, `base`, `bsc`, `eth` and `robinhood`; GoPlus chain ids are 8453, 56, 1 and 4663. Honeypot.is does not support Robinhood Chain, so rule E10 (sell simulation) is skipped there and E1/E2 rely on GoPlus alone.
 
 Three behaviours of these APIs, found while building, shape the logic:
 
@@ -108,7 +108,7 @@ Concentration is computed **after removing accounts that are not people**. On So
 | H3 | Creator holding | ≤ 5% | 5–20% | > 20% | Mobula treats a dev share under 5% as healthy. A dev holding a large share is a dump waiting to happen. |
 | H4 | Insiders (Solana) | none | insider wallets hold some supply, or RugCheck found linked wallet networks | insiders hold > 20% | Bundled or sniped launches where the dev split supply across wallets. Pine Analytics found more than 15,000 pump.fun launches in one month with deployer-funded snipers. |
 | H5 | Holder count | ≥ 50 | < 50 | — | Too few holders for the price to mean anything. |
-| H6 | LP locked or burned | ≥ 50% | < 50% | — | Unlocked LP can be pulled (a "hard rug"). This is only a soft penalty, because RugCheck's LP numbers on newer AMMs (for example Meteora DAMM v2) are not reliable enough for a hard gate. Skipped on bonding curves. |
+| H6 | LP locked or burned | ≥ 50% | < 50% | — | Unlocked LP can be pulled (a "hard rug"). This is only a soft penalty, because RugCheck's LP numbers on newer AMMs (for example Meteora DAMM v2) are not reliable enough for a hard gate. Skipped on bonding curves. On EVM, Uniswap v3/v4 liquidity is held as NFT positions whose lock status GoPlus does not report, so H6 is unknown there. |
 
 ## 4. Verdict
 

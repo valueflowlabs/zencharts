@@ -436,7 +436,12 @@ function evmHolderChecks(gp: any): Check[] {
     out.push(check("H5", "holders", "Holder count", count >= 50 ? "pass" : "warn", String(count), "≥ 50 holders"));
   }
 
-  if (gp.lp_holders?.length) {
+  // Uniswap v3/v4 liquidity is NFT positions; GoPlus does not track whether
+  // those are locked, so "0% locked" there would be a false warning.
+  if (gp.lp_holders?.some((h: any) => Array.isArray(h.NFT_list))) {
+    out.push(check("H6", "holders", "LP locked / burned", "unknown", "NFT positions — lock not tracked",
+      "warn if < 50% of LP is locked or burned"));
+  } else if (gp.lp_holders?.length) {
     const safe = gp.lp_holders
       .filter((h: any) => h.is_locked === 1 || DEAD.test(h.address ?? ""))
       .reduce((s: number, h: any) => s + Number(h.percent ?? 0) * 100, 0);

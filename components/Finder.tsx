@@ -312,9 +312,10 @@ function Detail({
           <div className="fd-links">
             <a href={t.market.url} target="_blank" rel="noreferrer">dexscreener</a>
             <a href={CHAINS[chain].explorer(address)} target="_blank" rel="noreferrer">explorer</a>
-            {chain === "solana" ? (
+            {chain === "solana" && (
               <a href={`https://rugcheck.xyz/tokens/${address}`} target="_blank" rel="noreferrer">rugcheck</a>
-            ) : (
+            )}
+            {CHAINS[chain].honeypot && (
               <a href={`https://honeypot.is/?address=${address}`} target="_blank" rel="noreferrer">honeypot.is</a>
             )}
             {t.socials.links.slice(0, 3).map((l) => (

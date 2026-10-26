@@ -400,6 +400,7 @@ body {
 
 .fd-chains {
   display: flex;
+  flex-wrap: wrap;
   gap: 2px;
   padding: 3px;
   border: 1px solid var(--border);

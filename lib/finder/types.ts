@@ -1,13 +1,14 @@
 // Shared shapes for the low-cap finder (/finder). Everything here is plain
 // data so the same objects flow from the API route to the client untouched.
 
-export type ChainId = "solana" | "base" | "bsc" | "ethereum";
+export type ChainId = "solana" | "base" | "bsc" | "ethereum" | "robinhood";
 
 export interface ChainInfo {
   id: ChainId;
   label: string;
   gt: string; // GeckoTerminal network id
   goplus: string | null; // GoPlus EVM chain id (null = Solana endpoint)
+  honeypot: boolean; // Honeypot.is can simulate trades on this chain
   explorer: (address: string) => string;
 }
 
@@ -17,6 +18,7 @@ export const CHAINS: Record<ChainId, ChainInfo> = {
     label: "Solana",
     gt: "solana",
     goplus: null,
+    honeypot: false,
     explorer: (a) => `https://solscan.io/token/${a}`,
   },
   base: {
@@ -24,6 +26,7 @@ export const CHAINS: Record<ChainId, ChainInfo> = {
     label: "Base",
     gt: "base",
     goplus: "8453",
+    honeypot: true,
     explorer: (a) => `https://basescan.org/token/${a}`,
   },
   bsc: {
@@ -31,6 +34,7 @@ export const CHAINS: Record<ChainId, ChainInfo> = {
     label: "BNB",
     gt: "bsc",
     goplus: "56",
+    honeypot: true,
     explorer: (a) => `https://bscscan.com/token/${a}`,
   },
   ethereum: {
@@ -38,7 +42,18 @@ export const CHAINS: Record<ChainId, ChainInfo> = {
     label: "Ethereum",
     gt: "eth",
     goplus: "1",
+    honeypot: true,
     explorer: (a) => `https://etherscan.io/token/${a}`,
+  },
+  // Robinhood's Arbitrum Orbit L2 (chain id 4663). Honeypot.is answers
+  // "Invalid chain", so there is no sell simulation here.
+  robinhood: {
+    id: "robinhood",
+    label: "Robinhood",
+    gt: "robinhood",
+    goplus: "4663",
+    honeypot: false,
+    explorer: (a) => `https://robinhoodchain.blockscout.com/token/${a}`,
   },
 };
 
