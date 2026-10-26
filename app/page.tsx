@@ -5,6 +5,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import Chart from "@/components/Chart";
 import TimeframeSelector from "@/components/TimeframeSelector";
 import Terminal from "@/components/Terminal";
+import ViewportPin from "@/components/ViewportPin";
 import { ConfigProvider } from "@/lib/config/ConfigContext";
 import {
   DEFAULT_TIMEFRAME,
@@ -35,7 +36,9 @@ function ZenChart() {
   return (
     <main className="zen">
       <Chart timeframe={timeframe} />
-      <TimeframeSelector value={timeframe} onChange={handleChange} />
+      <ViewportPin>
+        <TimeframeSelector value={timeframe} onChange={handleChange} />
+      </ViewportPin>
     </main>
   );
 }
@@ -47,7 +50,9 @@ export default function Home() {
       <Suspense fallback={<main className="zen" />}>
         <ZenChart />
       </Suspense>
-      <Terminal />
+      <ViewportPin>
+        <Terminal />
+      </ViewportPin>
     </ConfigProvider>
   );
 }
