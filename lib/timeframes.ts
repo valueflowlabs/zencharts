@@ -13,7 +13,7 @@ export const TIMEFRAMES = [
 
 export type TimeframeKey = (typeof TIMEFRAMES)[number]["key"];
 
-export const DEFAULT_TIMEFRAME: TimeframeKey = "1h";
+export const DEFAULT_TIMEFRAME: TimeframeKey = "1d";
 
 const VALID = new Set<string>(TIMEFRAMES.map((t) => t.key));
 
