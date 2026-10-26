@@ -562,6 +562,15 @@ const about: Command = {
   },
 };
 
+const finder: Command = {
+  name: "finder",
+  summary: "Open the low-cap token finder (/finder)",
+  run: (ctx) => {
+    ctx.print("opening /finder …", "info");
+    if (typeof window !== "undefined") window.location.assign("/finder");
+  },
+};
+
 const exit: Command = {
   name: "exit",
   aliases: ["close", "quit"],
@@ -583,6 +592,7 @@ export const COMMANDS: Command[] = [
   dvol,
   backtest,
   config,
+  finder,
   clear,
   about,
   exit,
