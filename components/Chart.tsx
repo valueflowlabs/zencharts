@@ -200,6 +200,26 @@ export default function Chart({ timeframe }: { timeframe: TimeframeKey }) {
     };
   }, []);
 
+  // End jumps to the latest bar (current price), keeping the zoom level,
+  // unless typing in a field.
+  useEffect(() => {
+    const onKey = (e: globalThis.KeyboardEvent) => {
+      const t = e.target;
+      if (
+        e.key !== "End" ||
+        t instanceof HTMLInputElement ||
+        t instanceof HTMLTextAreaElement ||
+        (t instanceof HTMLElement && t.isContentEditable)
+      ) {
+        return;
+      }
+      e.preventDefault();
+      chartRef.current?.timeScale().scrollToRealTime();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
   // Recolor the live chart whenever the theme changes.
   useEffect(() => {
     const chart = chartRef.current;
