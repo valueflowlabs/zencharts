@@ -38,6 +38,13 @@ import {
   scoreCycles,
   type Align,
 } from "../indicators/cycles";
+import {
+  PUELL_WINDOW_DAYS,
+  capitulations,
+  halvingEffect,
+  pointAt,
+  revenueMultiple,
+} from "../indicators/miners";
 import { valueAt } from "../indicators/align";
 import {
   DEFAULT_FEE_BP,
@@ -209,7 +216,7 @@ const num = (x: number, digits = 2) =>
 // Shared on/off/toggle handling. Returns true if the sub-command was handled.
 function handleSwitch(
   ctx: CommandContext,
-  key: "cone" | "powerlaw" | "cycles" | "funding" | "dvol",
+  key: "cone" | "powerlaw" | "cycles" | "miners" | "funding" | "dvol",
   sub: string | undefined,
   note?: string
 ): boolean {
@@ -380,16 +387,28 @@ const cycles: Command = {
   name: "cycles",
   aliases: ["halving"],
   summary: "Halving cycles: tops, lows, overlay of past cycles, self-test (BTC)",
-  usage: "cycles | cycles on|off | cycles align halving|low|off | cycles score",
+  usage: "cycles | cycles on|off | cycles align halving|low|off | cycles score | cycles miners [on|off]",
   run: async (ctx) => {
     const [sub, arg] = ctx.args;
     const note =
       "on BTC 1D/1W: ▲ halvings · ▼ cycle tops · ▲ lows · shading rise → fall → base; the price axis switches to log while on";
     if (handleSwitch(ctx, "cycles", sub, note)) {
-      if (sub !== "off" && ctx.config.symbol !== "btc") {
-        ctx.print("cycles are drawn on BTC only — try 'symbol btc'", "info");
+      if (sub !== "off") {
+        const next = nextHalvingEstimate();
+        ctx.print(
+          `next halving: block ${next.height.toLocaleString("en-US")} ≈ ${isoDate(next.time).slice(0, 7)}, marked at the right edge of the chart`,
+          "info"
+        );
+        if (ctx.config.symbol !== "btc") ctx.print("cycles are drawn on BTC only — try 'symbol btc'", "info");
       }
       return;
+    }
+    if (sub === "miners") {
+      const pane = "pane: miner revenue ÷ its 365-day mean · ▼ hash-ribbon capitulation starts (BTC, 1D/1W)";
+      if (handleSwitch(ctx, "miners", arg, pane)) return;
+      if (arg) return ctx.print("usage: cycles miners [on|off]", "err");
+      if (ctx.config.symbol !== "btc") return ctx.print("mining data is Bitcoin only — try 'symbol btc'", "err");
+      return printMiners(ctx);
     }
     if (sub === "align") {
       if (arg !== "off" && !ALIGNS.includes(arg as Align)) {
@@ -502,11 +521,91 @@ const cycles: Command = {
     );
   },
   complete: (preceding) => {
-    if (preceding.length === 0) return [...SWITCH, "align", "score"];
+    if (preceding.length === 0) return [...SWITCH, "align", "score", "miners"];
     if (preceding[0] === "align" && preceding.length === 1) return [...ALIGNS, "off"];
+    if (preceding[0] === "miners" && preceding.length === 1) return ["on", "off"];
     return [];
   },
 };
+
+async function printMiners(ctx: CommandContext) {
+  ctx.print("miner economics · mempool.space daily mining history", "info");
+  const [hashrate, revenue, hashprice, feeshare, daily] = await Promise.all([
+    fetchSeries("hashrate", "btc"),
+    fetchSeries("revenue", "btc"),
+    fetchSeries("hashprice", "btc"),
+    fetchSeries("feeshare", "btc"),
+    fetchClosedDaily("btc"),
+  ]);
+  if (!hashprice.length) return ctx.print("no mining data", "err");
+  const list = computeCycles(daily.times, daily.closes);
+  const mult = revenueMultiple(revenue);
+  const caps = capitulations(hashrate);
+
+  // Halving shock to miners: revenue per unit of hashrate roughly halves
+  // overnight unless price or fees make up for it.
+  ctx.print("  # halving    hashprice $/PH/day  change  hashrate 30d  fees", "info");
+  for (const h of HALVINGS) {
+    const e = halvingEffect(h.time, { hashprice, hashrate, feeshare });
+    const hp = (x: number | null) => (x === null ? "—" : x >= 100 ? x.toFixed(0) : x.toPrecision(3));
+    const change = e.hashpriceBefore && e.hashpriceAfter ? pct(e.hashpriceAfter / e.hashpriceBefore - 1, 0) : "—";
+    ctx.print(
+      `  ${h.n} ${isoDate(h.time)} ${hp(e.hashpriceBefore).padStart(8)} → ${hp(e.hashpriceAfter).padEnd(8)} ${change.padStart(6)}  ${(e.hashrateChange === null ? "—" : pct(e.hashrateChange, 0)).padStart(12)}  ${e.feeShareAfter === null ? "—" : `${e.feeShareAfter.toFixed(1)}%`}`,
+      "out"
+    );
+  }
+
+  // Revenue multiple at each turning point.
+  const at = (t: number) => pointAt(mult, t + DAY);
+  const m = (x: number | null) => (x === null ? "—" : x.toFixed(2));
+  ctx.print(
+    `revenue multiple (÷ ${PUELL_WINDOW_DAYS}-day mean) at tops: ${list.map((c) => `#${c.n} ${m(at(c.top.time))}${c.complete ? "" : "*"}`).join(" · ")}`,
+    "out"
+  );
+  const lows = list.filter((c) => c.complete && c.low);
+  ctx.print(`  at lows: ${lows.map((c) => `#${c.n} ${m(at(c.low!.time))}`).join(" · ")}`, "out");
+
+  // Did capitulations line up with the cycle lows?
+  const near = lows.map((c) => {
+    const lowT = c.low!.time;
+    const dist = caps
+      .map((k) => {
+        const end = k.end ?? Date.now() / 1000;
+        return lowT < k.start ? (k.start - lowT) / DAY : lowT > end ? (lowT - end) / DAY : 0;
+      })
+      .reduce((a, b) => Math.min(a, b), Infinity);
+    return { n: c.n, dist: Math.round(dist) };
+  });
+  const from2014 = caps.filter((k) => k.start >= Date.UTC(2014, 0, 1) / 1000);
+  ctx.print(
+    `capitulations (30-day hashrate < 60-day, ≥ 7 days): ${from2014.length} since 2014 · nearest to each cycle low: ${near.map((x) => `#${x.n} ${x.dist === 0 ? "during" : `${x.dist}d away`}`).join(" · ")}`,
+    "out"
+  );
+  for (const k of from2014.slice(-5)) {
+    ctx.print(
+      `  ${isoDate(k.start)} → ${k.end ? isoDate(k.end) : "ongoing"} · ${k.days}d · 30-day hashrate ${pct(k.hashDrop, 0)}`,
+      "out"
+    );
+  }
+  const capDays = from2014.reduce((s, k) => s + k.days, 0);
+  ctx.print(
+    `  base rate: ${((capDays / ((Date.now() / 1000 - Date.UTC(2014, 0, 1) / 1000) / DAY)) * 100).toFixed(0)}% of days since 2014 are in a capitulation — a match near a low is only meaningful above that`,
+    "info"
+  );
+
+  // Now.
+  const last = (p: typeof hashprice) => p[p.length - 1]?.value ?? NaN;
+  const live = caps.find((k) => k.end === null);
+  const yearAgo = pointAt(hashprice, hashprice[hashprice.length - 1].time - 365 * DAY);
+  ctx.print(
+    `now: hashprice $${last(hashprice).toFixed(1)}/PH/day (${yearAgo ? pct(last(hashprice) / yearAgo - 1, 0) : "—"} vs a year ago) · hashrate ${Math.round(last(hashrate))} EH/s · revenue multiple ${m(last(mult))} · fees ${last(feeshare).toFixed(1)}% · ${live ? `capitulation since ${isoDate(live.start)}` : "no capitulation"}`,
+    "out"
+  );
+  ctx.print(
+    "revenue multiple uses subsidy + fees (Puell uses subsidy alone) · * = live cycle's high so far · a handful of episodes: description, not a signal",
+    "info"
+  );
+}
 
 function printCycleScore(ctx: CommandContext, times: number[], closes: number[], list: ReturnType<typeof computeCycles>) {
   ctx.print(
@@ -716,7 +815,7 @@ const config: Command = {
       "out"
     );
     ctx.print(`  powerlaw = ${o.powerlaw ? "on" : "off"}`, "out");
-    ctx.print(`  cycles   = ${o.cycles ? "on" : "off"} (align ${o.cyclesAlign})`, "out");
+    ctx.print(`  cycles   = ${o.cycles ? "on" : "off"} (align ${o.cyclesAlign}, miners ${o.miners ? "on" : "off"})`, "out");
     ctx.print(`  funding  = ${o.funding ? "on" : "off"}`, "out");
     ctx.print(`  dvol     = ${o.dvol ? "on" : "off"}`, "out");
   },

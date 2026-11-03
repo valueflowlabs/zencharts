@@ -16,6 +16,7 @@ export interface Overlays {
   powerlaw: boolean; // power-law corridor (BTC, 1D/1W)
   cycles: boolean; // halving-cycle markers and phase shading (BTC, 1D/1W)
   cyclesAlign: Align | "off"; // earlier cycles laid over the live one
+  miners: boolean; // miner revenue multiple pane with capitulations (BTC)
   funding: boolean; // funding-rate pane
   dvol: boolean; // DVOL vs realised-vol pane (BTC)
 }
@@ -27,6 +28,7 @@ export const DEFAULT_OVERLAYS: Overlays = {
   powerlaw: false,
   cycles: false,
   cyclesAlign: "off",
+  miners: false,
   funding: false,
   dvol: false,
 };
@@ -44,6 +46,7 @@ export function patchOverlays(
     typeof next.powerlaw === "boolean" &&
     typeof next.cycles === "boolean" &&
     (next.cyclesAlign === "off" || ALIGNS.includes(next.cyclesAlign)) &&
+    typeof next.miners === "boolean" &&
     typeof next.funding === "boolean" &&
     typeof next.dvol === "boolean";
   return valid ? next : null;

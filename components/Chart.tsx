@@ -35,6 +35,7 @@ import {
   phaseAt,
   type Phase,
 } from "@/lib/indicators/cycles";
+import { capitulations, revenueMultiple } from "@/lib/indicators/miners";
 import { snapToBars, valueAt, type Point } from "@/lib/indicators/align";
 import { fetchCandles, fetchSeries } from "@/lib/data";
 import { BAR_SECONDS, DAY, barStart } from "@/lib/time";
@@ -54,10 +55,10 @@ type Status = "loading" | "ready" | "error";
 
 // v4 has no real panes, so bottom panes are overlay price scales stacked with
 // `scaleMargins`; the candles shrink to make room. Listed top to bottom.
-type PaneId = "momentum" | "funding" | "dvol";
-const PANE_ORDER: PaneId[] = ["momentum", "funding", "dvol"];
+type PaneId = "momentum" | "funding" | "dvol" | "miners";
+const PANE_ORDER: PaneId[] = ["momentum", "funding", "dvol", "miners"];
 const CANDLE_MARGINS = { top: 0.2, bottom: 0.1 }; // library default
-const PANE_HEIGHT = [0, 0.2, 0.17, 0.14]; // per pane, by number of panes shown
+const PANE_HEIGHT = [0, 0.2, 0.17, 0.14, 0.12]; // per pane, by number of panes shown
 
 function paneLayout(shown: PaneId[]) {
   const n = shown.length;
@@ -93,6 +94,8 @@ interface ExternalData {
   symbol: string;
   funding?: Point[]; // annualised %
   dvol?: Point[];
+  revenue?: Point[]; // miner revenue, USD/day (BTC)
+  hashrate?: Point[]; // EH/s (BTC)
 }
 
 export default function Chart({ timeframe }: { timeframe: TimeframeKey }) {
@@ -111,6 +114,9 @@ export default function Chart({ timeframe }: { timeframe: TimeframeKey }) {
   const cycleShadeRefs = useRef<Record<Phase, ISeriesApi<"Area">> | null>(null);
   // Earlier cycles laid over the live one ("cycles align"), oldest first.
   const ghostRefs = useRef<ISeriesApi<"Line">[]>([]);
+  // Invisible line from the last bar to the next halving, carrying its marker.
+  const futureRef = useRef<ISeriesApi<"Line"> | null>(null);
+  const minersRef = useRef<ISeriesApi<"Line"> | null>(null);
   const candlesRef = useRef<Candle[]>([]);
   const externalRef = useRef<ExternalData>({ symbol: "" });
   const [externalVersion, setExternalVersion] = useState(0);
@@ -202,6 +208,20 @@ export default function Chart({ timeframe }: { timeframe: TimeframeKey }) {
       lineWidth: 1,
       crosshairMarkerVisible: false,
     });
+    minersRef.current = chart.addLineSeries({
+      ...pane("miners", (v) => `${v.toFixed(2)}×`),
+      lineWidth: 1,
+      crosshairMarkerVisible: false,
+    });
+    // Revenue at its 1-year mean: the pane's reference level.
+    minersRef.current.createPriceLine({
+      price: 1,
+      color: "rgba(128,128,128,0.45)",
+      lineWidth: 1,
+      lineStyle: LineStyle.Dotted,
+      axisLabelVisible: false,
+      title: "",
+    });
 
     // Overlays share the candles' price scale so they line up with price.
     coneRefs.current = Array.from({ length: 5 }, () =>
@@ -210,6 +230,12 @@ export default function Chart({ timeframe }: { timeframe: TimeframeKey }) {
     powerLawRefs.current = CORRIDOR_QUANTILES.map(() =>
       chart.addLineSeries({ ...QUIET_LINE, visible: false })
     );
+    futureRef.current = chart.addLineSeries({
+      ...QUIET_LINE,
+      visible: false,
+      color: "rgba(0,0,0,0)",
+      autoscaleInfoProvider: () => null,
+    });
     // Three earlier cycles at most; labelled on the price axis (#1, #2, #3).
     // They stay out of autoscale: cycle 1's ×93 path projects to millions and
     // would squash the candles; the axis fits price, ghosts may run off-top.
@@ -238,6 +264,8 @@ export default function Chart({ timeframe }: { timeframe: TimeframeKey }) {
       powerLawRefs.current = [];
       cycleShadeRefs.current = null;
       ghostRefs.current = [];
+      futureRef.current = null;
+      minersRef.current = null;
     };
   }, []);
 
@@ -303,10 +331,13 @@ export default function Chart({ timeframe }: { timeframe: TimeframeKey }) {
     const ext = externalRef.current.symbol === s.symbol ? externalRef.current : null;
     const barTimes = candles.map((k) => k.time);
 
+    const minersAllowed =
+      s.overlays.miners && s.symbol === "btc" && (s.timeframe === "1d" || s.timeframe === "1w");
     const want: Record<PaneId, boolean> = {
       momentum: s.momentum,
       funding: s.overlays.funding && !!ext?.funding,
       dvol: s.overlays.dvol && !!ext?.dvol,
+      miners: minersAllowed && !!ext?.revenue && !!ext?.hashrate,
     };
     const layout = paneLayout(PANE_ORDER.filter((id) => want[id]));
     chart.priceScale("right").applyOptions({ scaleMargins: layout.candles });
@@ -353,6 +384,33 @@ export default function Chart({ timeframe }: { timeframe: TimeframeKey }) {
       dvol.setData([]);
       realised.setData([]);
     }
+
+    // Miners: revenue ÷ its 1-year mean, with hash-ribbon capitulation starts.
+    const miners = minersRef.current;
+    if (miners) {
+      miners.applyOptions({ visible: want.miners, color: s.theme.page.accent });
+      if (want.miners && ext?.revenue && ext.hashrate) {
+        const line = snapToBars(revenueMultiple(ext.revenue), barTimes, s.timeframe, "last");
+        miners.setData(toLine(line));
+        const first = line[0]?.time ?? Infinity;
+        const step = BAR_SECONDS[s.timeframe];
+        miners.setMarkers(
+          capitulations(ext.hashrate)
+            .filter((k) => k.start >= first)
+            .map((k) => ({
+              time: asTime(s.timeframe === "1w" ? barStart(k.start, "1w") : Math.floor(k.start / step) * step),
+              position: "aboveBar" as const,
+              shape: "arrowDown" as const,
+              color: c.down,
+              text: "",
+            }))
+            .filter((mk, i, all) => i === 0 || mk.time !== all[i - 1].time)
+        );
+      } else {
+        miners.setData([]);
+        miners.setMarkers([]);
+      }
+    }
   }, []);
 
   // "cycles align": each earlier cycle's path from its halving (or bear low),
@@ -370,7 +428,8 @@ export default function Chart({ timeframe }: { timeframe: TimeframeKey }) {
     const step = BAR_SECONDS[s.timeframe];
     const next = nextHalvingEstimate();
     const grid = candles.map((k) => k.time);
-    if (last) for (let t = last.time + step; t <= next.time + 90 * DAY; t += step) grid.push(t);
+    // Half a year past the next halving, so its marker label clears the axis.
+    if (last) for (let t = last.time + step; t <= next.time + 180 * DAY; t += step) grid.push(t);
     const built =
       cycles.length && align !== "off"
         ? buildGhosts(closed.map((k) => k.time), closed.map((k) => k.close), cycles, align, grid)
@@ -387,21 +446,30 @@ export default function Chart({ timeframe }: { timeframe: TimeframeKey }) {
         lineStyle: LineStyle.Dashed,
       });
       line.setData(g ? g.points.map((p) => ({ time: asTime(p.time), value: p.value })) : []);
-      line.setMarkers([]);
     });
-    // The next halving, on the first line that reaches it.
-    const hi = ghosts.findIndex((g) => g.points[g.points.length - 1].time >= next.time);
-    if (hi >= 0) {
-      const at = ghosts[hi].points.find((p) => p.time >= next.time)!;
-      lines[hi].setMarkers([
-        {
-          time: asTime(at.time),
-          position: "belowBar",
-          shape: "arrowUp",
-          color: accent,
-          text: `halving ${next.n} ≈ ${new Date(next.time * 1000).toISOString().slice(0, 7)}`,
-        },
-      ]);
+
+    // The next halving, whenever cycles are drawn: an invisible line at the
+    // last price runs on the bar grid to it, so the time axis reaches it.
+    const future = futureRef.current;
+    if (future) {
+      const show = cycles.length > 0 && !!last;
+      future.applyOptions({ visible: show });
+      const pts = show ? grid.filter((t) => t > last!.time) : [];
+      future.setData(pts.map((t) => ({ time: asTime(t), value: last!.close })));
+      const at = pts.find((t) => t >= next.time);
+      future.setMarkers(
+        at
+          ? [
+              {
+                time: asTime(at),
+                position: "aboveBar",
+                shape: "arrowDown",
+                color: accent,
+                text: `halving ${next.n} ≈ ${new Date(next.time * 1000).toISOString().slice(0, 7)}`,
+              },
+            ]
+          : []
+      );
     }
   }, []);
 
@@ -586,6 +654,7 @@ export default function Chart({ timeframe }: { timeframe: TimeframeKey }) {
   // Fetch the external series the enabled overlays need, once per symbol.
   const needFunding = overlays.funding;
   const needDvol = overlays.dvol || (overlays.cone && overlays.coneModel === "dvol");
+  const needMiners = overlays.miners && symbol === "btc";
   useEffect(() => {
     if (externalRef.current.symbol !== symbol) {
       externalRef.current = { symbol };
@@ -593,7 +662,7 @@ export default function Chart({ timeframe }: { timeframe: TimeframeKey }) {
     }
     const ext = externalRef.current;
     const controller = new AbortController();
-    const load = async (key: "funding" | "dvol") => {
+    const load = async (key: "funding" | "dvol" | "revenue" | "hashrate") => {
       try {
         const raw = await fetchSeries(key, symbol, controller.signal);
         if (externalRef.current !== ext) return;
@@ -607,8 +676,10 @@ export default function Chart({ timeframe }: { timeframe: TimeframeKey }) {
     };
     if (needFunding && !ext.funding) load("funding");
     if (needDvol && !ext.dvol) load("dvol");
+    if (needMiners && !ext.revenue) load("revenue");
+    if (needMiners && !ext.hashrate) load("hashrate");
     return () => controller.abort();
-  }, [symbol, needFunding, needDvol]);
+  }, [symbol, needFunding, needDvol, needMiners]);
 
   // (Re)load data whenever the instrument or timeframe changes, then poll the
   // last candle.
