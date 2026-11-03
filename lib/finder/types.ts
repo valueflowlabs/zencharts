@@ -116,6 +116,24 @@ export interface Socials {
   links: { type: string; url: string }[];
 }
 
+// Public Telegram page stats. Groups also report how many members are online
+// right now; channels only have a subscriber count.
+export interface Telegram {
+  url: string;
+  kind: "group" | "channel";
+  members: number;
+  online: number | null;
+}
+
+// Social attention index: context next to the score, never part of it. Built
+// from Telegram alone for now (the only free, keyless social source).
+export interface Attention {
+  index: number; // 0..100
+  parts: ScorePart[];
+  hype: boolean; // loud socials, few on-chain buyers
+  telegram: Telegram;
+}
+
 export type CheckStatus = "pass" | "warn" | "fail" | "unknown";
 export type CheckGroup = "market" | "activity" | "contract" | "holders";
 
@@ -153,6 +171,7 @@ export interface FinderToken {
   score: number; // 0..100, 0 when verdict is fail
   scoreParts: ScorePart[];
   riskMultiplier: number;
+  attention: Attention | null; // null = no readable Telegram linked
 }
 
 export interface ScanParams {

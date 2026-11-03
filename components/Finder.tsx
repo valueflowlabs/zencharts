@@ -15,6 +15,7 @@ import {
   WATCHLIST,
   type FinderToken,
   type ScanResult,
+  type Telegram,
 } from "@/lib/finder/types";
 import type { TokenReport } from "@/lib/finder/scan";
 import { fmtAgo, fmtPct, fmtPrice, fmtUsd, shortAddr } from "@/lib/finder/format";
@@ -211,6 +212,7 @@ export default function Finder() {
           <span className="fd-num">mcap</span>
           <span className="fd-num fd-hide-sm">vol 24h</span>
           <span className="fd-num fd-hide-sm">buyers 1h</span>
+          <span className="fd-num fd-hide-sm" title="Social attention index, from the linked Telegram">social</span>
           <span className="fd-num fd-hide-sm">age</span>
         </div>
         {scan.state === "loading" && !scan.data && <div className="fd-empty">scanning new &amp; trending pools…</div>}
@@ -265,9 +267,31 @@ function Row({ t, onOpen, active }: { t: FinderToken; onOpen: () => void; active
       <span className="fd-num">{fmtUsd(m.mcapUsd)}</span>
       <span className="fd-num fd-hide-sm">{fmtUsd(m.volume.h24)}</span>
       <span className="fd-num fd-hide-sm">{m.flow.h1.buyers ?? "—"}</span>
+      <span className="fd-num fd-hide-sm" title={
+          t.attention
+            ? tgSummary(t.attention.telegram)
+            : t.socials.telegram
+              ? "Telegram not read (failed a gate, or the page is private)"
+              : "no Telegram linked"
+        }>
+        {t.attention ? (
+          <>
+            {t.attention.hype && <i className="fd-badge fd-badge--paid">hype</i>} {t.attention.index}
+          </>
+        ) : (
+          "—"
+        )}
+      </span>
       <span className="fd-num fd-hide-sm">{fmtAgo(m.createdAt)}</span>
     </button>
   );
+}
+
+function tgSummary(tg: Telegram) {
+  const n = tg.members.toLocaleString("en-US");
+  return tg.kind === "group"
+    ? `Telegram group: ${n} members, ${(tg.online ?? 0).toLocaleString("en-US")} online`
+    : `Telegram channel: ${n} subscribers`;
 }
 
 function tone(n: number) {
@@ -379,6 +403,33 @@ function Detail({
               </div>
             ))}
           </section>
+
+          {t.attention && (
+            <section className="fd-section">
+              <h3>
+                social {t.attention.index}
+                <small> = Σ weight × feature · context only, not in the score</small>
+              </h3>
+              {t.attention.parts.map((p) => (
+                <div key={p.id} className="fd-part">
+                  <span>{p.label}</span>
+                  <span className="fd-bar"><i style={{ width: `${p.value * 100}%` }} /></span>
+                  <span className="fd-num">{Math.round(p.weight * 100)}%</span>
+                </div>
+              ))}
+              <div className="fd-social-note">
+                <a href={t.attention.telegram.url} target="_blank" rel="noreferrer">
+                  {tgSummary(t.attention.telegram)}
+                </a>
+                {t.attention.hype && (
+                  <p>
+                    <i className="fd-badge fd-badge--paid">hype</i> loud Telegram, few on-chain buyers in the
+                    last hour — shilling, bots or an exit-liquidity setup are common causes.
+                  </p>
+                )}
+              </div>
+            </section>
+          )}
 
           {GROUPS.map((g) => {
             const list = t.checks.filter((c) => c.group === g.id);

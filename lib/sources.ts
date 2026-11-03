@@ -64,6 +64,19 @@ export async function fetchJson(url: string): Promise<any> {
   }
 }
 
+// Same timeout and error handling as fetchJson, for HTML pages.
+export async function fetchText(url: string): Promise<string> {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), FETCH_TIMEOUT_MS);
+  try {
+    const res = await fetch(url, { cache: "no-store", signal: ctrl.signal });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return await res.text();
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 function dedupeSort(candles: Candle[]): Candle[] {
   const map = new Map<number, Candle>();
   for (const c of candles) map.set(c.time, c);

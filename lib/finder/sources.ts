@@ -10,12 +10,14 @@
 //   - GoPlus (api.gopluslabs.io): Solana authority flags (balance-mutable,
 //     transfer hook, default state…) and the EVM token-security report.
 //   - Honeypot.is (api.honeypot.is): EVM buy/sell simulation (detail view only).
+//   - Telegram (t.me): the public preview page of a linked group or channel —
+//     member / subscriber count, and members online for groups.
 //
 // Every adapter returns `null` on failure so one dead provider degrades the
 // affected checks to "unknown" instead of failing the whole scan.
 
-import { fetchJson } from "../sources";
-import type { ChainId } from "./types";
+import { fetchJson, fetchText } from "../sources";
+import type { ChainId, Telegram } from "./types";
 
 const GT = "https://api.geckoterminal.com/api/v2";
 const DS = "https://api.dexscreener.com";
@@ -283,6 +285,40 @@ export function dsPair(chain: ChainId, pairId: string) {
     cached(`ds:pair:${chain}:${pairId}`, 45_000, async (): Promise<DsPair | null> => {
       const json = await fetchJson(`${DS}/latest/dex/pairs/${chain}/${pairId}`);
       return json?.pair ?? json?.pairs?.[0] ?? null;
+    })
+  );
+}
+
+// ---- Telegram ---------------------------------------------------------------
+
+// Counts move slowly, so a long TTL keeps scan refreshes from re-scraping.
+const TG_TTL_MS = 10 * 60_000;
+
+// t.me prints "8 137 members, 514 online" (groups) or "4 422 subscribers"
+// (channels), grouping thousands with spaces and using the singular for 1.
+// A group with nobody online omits the ", N online" part.
+export function parseTgExtra(text: string): Omit<Telegram, "url"> | null {
+  const m = text.match(/([\d\s\u00a0]+)\s(members?|subscribers?)(?:,\s*([\d\s\u00a0]+)\sonline)?/);
+  if (!m) return null;
+  const n = (x: string) => Number(x.replace(/\D/g, ""));
+  const group = m[2].startsWith("member");
+  return {
+    kind: group ? "group" : "channel",
+    members: n(m[1]),
+    online: group ? (m[3] ? n(m[3]) : 0) : null,
+  };
+}
+
+export function tgStats(url: string) {
+  // Public handles and "+invite" links both have a preview page.
+  const id = url.match(/^https?:\/\/(?:www\.)?(?:t|telegram)\.me\/(?:s\/)?(\+?[A-Za-z0-9_-]+)/)?.[1];
+  if (!id) return Promise.resolve(null);
+  return soft(
+    cached(`tg:${id.toLowerCase()}`, TG_TTL_MS, async (): Promise<Telegram | null> => {
+      const html = await fetchText(`https://t.me/${id}`);
+      const extra = html.match(/<div class="tgme_page_extra">([^<]*)/)?.[1];
+      const stats = extra ? parseTgExtra(extra) : null;
+      return stats ? { url: `https://t.me/${id}`, ...stats } : null;
     })
   );
 }

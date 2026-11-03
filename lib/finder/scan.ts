@@ -3,6 +3,7 @@
 
 import {
   activityChecks,
+  attentionOf,
   evmChecks,
   honeypotCheck,
   marketChecks,
@@ -25,6 +26,7 @@ import {
   honeypotSim,
   mapLimit,
   rugcheckReport,
+  tgStats,
   type DsPair,
   type GtPool,
   type OhlcvBar,
@@ -42,6 +44,7 @@ import {
   type ScanParams,
   type ScanResult,
   type Socials,
+  type Telegram,
   type Window,
 } from "./types";
 
@@ -176,6 +179,22 @@ async function securityFor(
   return { checks: out, source: "goplus", ok: anyOk || tokens.length === 0 };
 }
 
+// Telegram stats per token address, for those that link one.
+async function telegramFor(
+  tokens: { address: string; socials: Socials }[]
+): Promise<{ stats: Map<string, Telegram>; ok: boolean }> {
+  const out = new Map<string, Telegram>();
+  const linked = tokens.flatMap((t) => {
+    const url = t.socials.links.find((l) => l.type === "telegram")?.url;
+    return url ? [{ address: t.address, url }] : [];
+  });
+  await mapLimit(linked, 4, async (t) => {
+    const tg = await tgStats(t.url);
+    if (tg) out.set(t.address, tg);
+  });
+  return { stats: out, ok: out.size > 0 || linked.length === 0 };
+}
+
 function finalize(
   t: Omit<FinderToken, "verdict" | "score" | "scoreParts" | "riskMultiplier">,
   p: ScanParams
@@ -270,16 +289,22 @@ async function runScan(p: ScanParams): Promise<ScanResult> {
     ...passed.filter((s) => s.c.origins.has("watch")),
     ...passed.filter((s) => !s.c.origins.has("watch")).slice(0, SECURITY_TOP_N),
   ];
-  const sec = await securityFor(
-    p.chain,
-    survivors.map((s) => ({ address: s.c.address, market: s.market }))
-  );
+  // Telegram for everything past the gates, alongside the security sweep.
+  const [sec, tg] = await Promise.all([
+    securityFor(
+      p.chain,
+      survivors.map((s) => ({ address: s.c.address, market: s.market }))
+    ),
+    telegramFor(passed.map((s) => ({ address: s.c.address, socials: s.socials }))),
+  ]);
   sources[sec.source] = sec.ok ? "ok" : "error";
+  sources.telegram = tg.ok ? "ok" : "error";
 
   const tokens = staged
     .filter((s) => s.market)
     .map((s) => {
       const secChecks = sec.checks.get(s.c.address);
+      const tgStat = tg.stats.get(s.c.address);
       return finalize(
         {
           chain: p.chain,
@@ -293,6 +318,7 @@ async function runScan(p: ScanParams): Promise<ScanResult> {
           socials: s.socials,
           securitySource: secChecks ? sec.source : null,
           checks: [...s.pre, ...(secChecks ?? uncheckedSecurity())],
+          attention: tgStat ? attentionOf(tgStat, s.market) : null,
         },
         p
       );
@@ -328,10 +354,11 @@ export async function analyzeToken(
   if (!market) return null;
 
   const socials = socialsOf(ds);
-  const [sec, hp, candles] = await Promise.all([
+  const [sec, hp, candles, tg] = await Promise.all([
     securityFor(chainId, [{ address, market }]),
     chain.honeypot ? honeypotSim(chain.goplus!, address) : Promise.resolve(null),
     gtOhlcv(chain.gt, market.pairAddress),
+    telegramFor([{ address, socials }]),
   ]);
   const checks = [
     ...marketChecks(market, p),
@@ -355,6 +382,7 @@ export async function analyzeToken(
         ? sec.source + (chain.honeypot ? "+honeypot.is" : "")
         : null,
       checks,
+      attention: tg.stats.has(address) ? attentionOf(tg.stats.get(address)!, market) : null,
     },
     p
   );

@@ -6,6 +6,7 @@
 // tunable starting points, not empirically validated cut-offs.
 
 import type {
+  Attention,
   Check,
   CheckGroup,
   CheckStatus,
@@ -13,6 +14,7 @@ import type {
   ScanParams,
   ScorePart,
   Socials,
+  Telegram,
   Verdict,
 } from "./types";
 
@@ -539,4 +541,35 @@ export function scoreOf(
     : Math.max(0.3, 1 - 0.1 * warns);
   const raw = parts.reduce((s, x) => s + x.weight * x.value, 0);
   return { score: Math.round(raw * riskMultiplier * 100), parts, riskMultiplier };
+}
+
+// ---- social attention (context only, never feeds scoreOf) ----------------------
+
+// Index from the linked Telegram: reach (members) and live attention (members
+// online right now), both log-scaled. Channels show no online count, so live
+// scores 0 for them: subscriber counts alone are cheap to buy. Thresholds are
+// heuristic starting points.
+export function attentionOf(tg: Telegram, m: Market | null): Attention {
+  const logScale = (n: number, full: number) => clamp01(Math.log10(1 + n) / Math.log10(1 + full));
+  const parts: ScorePart[] = [
+    // Reach: 50k → full marks; a 2.8M "token" channel is not 50× better.
+    {
+      id: "reach",
+      label: `Telegram ${tg.kind === "group" ? "members" : "subscribers"}`,
+      weight: 0.5,
+      value: logScale(tg.members, 50_000),
+    },
+    // Live: 1,000 online → full marks.
+    {
+      id: "live",
+      label: tg.online === null ? "Online now (n/a for channels)" : "Members online now",
+      weight: 0.5,
+      value: tg.online === null ? 0 : logScale(tg.online, 1_000),
+    },
+  ];
+  const index = Math.round(parts.reduce((s, x) => s + x.weight * x.value, 0) * 100);
+  // Hype: a loud Telegram that is not turning into buyers (same fallback as
+  // scoreOf's breadth) — shilling, bots, or an exit-liquidity setup.
+  const buyers = m ? m.flow.h1.buyers ?? m.flow.h1.buys / 2 : 0;
+  return { index, parts, hype: index >= 50 && buyers < 5, telegram: tg };
 }
