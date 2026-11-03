@@ -6,6 +6,7 @@ import {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
 } from "react";
 import {
@@ -105,6 +106,10 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
     saved.momentumLookback
   );
   const [overlays, setOverlaysState] = useState<Overlays>(saved.overlays);
+  // Latest overlays, updated synchronously: a command that patches twice in
+  // one tick (scope, then on) must build on its own first patch, not on the
+  // value from the last render.
+  const overlaysRef = useRef(overlays);
 
   const theme = getTheme(themeName);
 
@@ -144,15 +149,13 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
     return true;
   }, []);
 
-  const setOverlays = useCallback(
-    (patch: Partial<Overlays>): boolean => {
-      const next = patchOverlays(overlays, patch);
-      if (!next) return false;
-      setOverlaysState(next);
-      return true;
-    },
-    [overlays]
-  );
+  const setOverlays = useCallback((patch: Partial<Overlays>): boolean => {
+    const next = patchOverlays(overlaysRef.current, patch);
+    if (!next) return false;
+    overlaysRef.current = next;
+    setOverlaysState(next);
+    return true;
+  }, []);
 
   const value = useMemo<ConfigValue>(
     () => ({

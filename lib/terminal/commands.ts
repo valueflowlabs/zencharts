@@ -389,7 +389,7 @@ const cycles: Command = {
   aliases: ["halving"],
   summary: "Halving cycles: tops, lows, overlay of past cycles, self-test (BTC)",
   usage:
-    "cycles | cycles on|off | cycles align halving|low|off | cycles score | cycles miners [on|off] | cycles liquidity [on|off]",
+    "cycles | cycles on|off | cycles align halving|low|off | cycles score | cycles miners [on|off] | cycles liquidity [us|global] | cycles liquidity on|off [us|global]",
   run: async (ctx) => {
     const [sub, arg] = ctx.args;
     const note =
@@ -406,10 +406,24 @@ const cycles: Command = {
       return;
     }
     if (sub === "liquidity") {
-      const pane = "pane: US M2 12-month growth (bars) · Fed net liquidity 52-week growth (line), % (1D/1W)";
-      if (handleSwitch(ctx, "liquidity", arg, pane)) return;
-      if (arg) return ctx.print("usage: cycles liquidity [on|off]", "err");
-      return printLiquidity(ctx);
+      // cycles liquidity [us|global] · cycles liquidity on|off [us|global]
+      const [, a1, a2] = ctx.args;
+      const scopeArg = [a1, a2].find((x) => x === "us" || x === "global") as "us" | "global" | undefined;
+      const sw = [a1, a2].find((x) => SWITCH.includes(x ?? ""));
+      if (sw) {
+        if (scopeArg) ctx.config.setOverlays({ liquidityScope: scopeArg });
+        const scope = scopeArg ?? ctx.config.overlays.liquidityScope;
+        const pane =
+          scope === "global"
+            ? "pane: G4 broad money in USD, 12-month growth (bars) · Fed + ECB + BoJ assets, 12-month growth (line), % (1D/1W)"
+            : "pane: US M2 12-month growth (bars) · Fed net liquidity 52-week growth (line), % (1D/1W)";
+        handleSwitch(ctx, "liquidity", sw, pane);
+        return;
+      }
+      if ([a1, a2].some((x) => x && x !== "us" && x !== "global")) {
+        return ctx.print("usage: cycles liquidity [us|global] | cycles liquidity on|off [us|global]", "err");
+      }
+      return scopeArg === "global" ? printGlobalLiquidity(ctx) : printLiquidity(ctx);
     }
     if (sub === "miners") {
       const pane = "pane: miner revenue ÷ its 365-day mean · ▼ hash-ribbon capitulation starts (BTC, 1D/1W)";
@@ -531,8 +545,10 @@ const cycles: Command = {
   complete: (preceding) => {
     if (preceding.length === 0) return [...SWITCH, "align", "score", "miners", "liquidity"];
     if (preceding[0] === "align" && preceding.length === 1) return [...ALIGNS, "off"];
-    if ((preceding[0] === "miners" || preceding[0] === "liquidity") && preceding.length === 1)
-      return ["on", "off"];
+    if (preceding[0] === "miners" && preceding.length === 1) return ["on", "off"];
+    if (preceding[0] === "liquidity" && preceding.length === 1) return ["us", "global", "on", "off"];
+    if (preceding[0] === "liquidity" && preceding.length === 2 && SWITCH.includes(preceding[1]))
+      return ["us", "global"];
     return [];
   },
 };
@@ -570,39 +586,11 @@ async function printLiquidity(ctx: CommandContext) {
 
   // Lag correlations: BTC vs liquidity known `lag` months earlier.
   const btcM = monthly(daily.times.map((t, i) => ({ time: t, value: daily.closes[i] })));
-  const m2M = monthly(m2);
-  const nlM = monthly(netliq);
-  const rows: [string, Map<number, number>, Map<number, number>][] = [
-    ["12m M2, overlapping", logChange(btcM, 12), logChange(m2M, 12)],
-    ["1m M2", logChange(btcM, 1), logChange(m2M, 1)],
-    ["1m net liquidity", logChange(btcM, 1), logChange(nlM, 1)],
-  ];
-  ctx.print(
-    `correlation with BTC's change, liquidity lagged by k months (since 2013)`,
-    "info"
-  );
-  ctx.print(`  ${"k (months)".padEnd(20)}${LIQ_LAGS.map((k) => String(k).padStart(5)).join(" ")}`, "info");
-  let best = { r: 0, k: 0, label: "", n: 0 };
-  for (const [label, btc, liq] of rows) {
-    const cells = LIQ_LAGS.map((k) => {
-      const c = lagCorrelation(btc, liq, k, LIQ_SINCE);
-      if (!label.startsWith("12m") && Math.abs(c.r) > Math.abs(best.r)) best = { r: c.r, k, label, n: c.n };
-      return (Number.isFinite(c.r) ? c.r.toFixed(2) : "—").padStart(5);
-    });
-    ctx.print(`  ${label.padEnd(20)}${cells.join(" ")}`, "out");
-  }
-  const noise = best.n ? 2 / Math.sqrt(best.n) : NaN;
-  ctx.print(
-    `  monthly noise band ±${num(noise, 2)} (n≈${best.n}) · 12-month windows overlap, so that row shares trend and overstates`,
-    "info"
-  );
-  const edge = Math.abs(best.r) > noise;
-  ctx.print(
-    edge
-      ? `monthly: strongest ${best.label} at k=${best.k}, r ${num(best.r, 2)} — beyond noise, but one of ${LIQ_LAGS.length * 2} tries`
-      : `monthly: no correlation beyond noise at any lag (best ${best.label} k=${best.k}, r ${num(best.r, 2)})`,
-    edge ? "info" : "err"
-  );
+  printLagTable(ctx, btcM, [
+    ["12m M2, overlapping", monthly(m2), 12],
+    ["1m M2", monthly(m2), 1],
+    ["1m net liquidity", monthly(netliq), 1],
+  ]);
 
   const last = (p: typeof m2) => p[p.length - 1];
   ctx.print(
@@ -611,6 +599,106 @@ async function printLiquidity(ctx: CommandContext) {
   );
   ctx.print(
     "US only: global liquidity (China, ECB, BoJ, FX) is not included · * = live cycle, top is the high so far",
+    "info"
+  );
+}
+
+// Lag-correlation table shared by the US and global reports.
+function printLagTable(
+  ctx: CommandContext,
+  btcM: { time: number; value: number }[],
+  rows: [string, { time: number; value: number }[], number][] // label, monthly series, step
+) {
+  ctx.print("correlation with BTC's change, liquidity lagged by k months (since 2013)", "info");
+  ctx.print(`  ${"k (months)".padEnd(20)}${LIQ_LAGS.map((k) => String(k).padStart(5)).join(" ")}`, "info");
+  let best = { r: 0, k: 0, label: "", n: 0 };
+  let tries = 0;
+  for (const [label, liqM, step] of rows) {
+    const btc = logChange(btcM, step);
+    const liq = logChange(liqM, step);
+    const cells = LIQ_LAGS.map((k) => {
+      const c = lagCorrelation(btc, liq, k, LIQ_SINCE);
+      if (step === 1) {
+        tries++;
+        if (Math.abs(c.r) > Math.abs(best.r)) best = { r: c.r, k, label, n: c.n };
+      }
+      return (Number.isFinite(c.r) ? c.r.toFixed(2) : "—").padStart(5);
+    });
+    ctx.print(`  ${label.padEnd(20)}${cells.join(" ")}`, "out");
+  }
+  const noise = best.n ? 2 / Math.sqrt(best.n) : NaN;
+  ctx.print(
+    `  monthly noise band ±${num(noise, 2)} (n≈${best.n}) · 12-month windows overlap, so those rows share trend and overstate`,
+    "info"
+  );
+  const edge = Math.abs(best.r) > noise;
+  ctx.print(
+    edge
+      ? `monthly: strongest ${best.label} at k=${best.k}, r ${num(best.r, 2)} — beyond noise, but one of ${tries} tries`
+      : `monthly: no correlation beyond noise at any lag (best ${best.label} k=${best.k}, r ${num(best.r, 2)})`,
+    edge ? "info" : "err"
+  );
+}
+
+async function printGlobalLiquidity(ctx: CommandContext) {
+  ctx.print(
+    "global liquidity · G4 broad money (US M2, euro M2, Japan M2, UK M4) and Fed + ECB + BoJ assets, in USD at month-end FX · stamped when published",
+    "info"
+  );
+  const [gm2, gm2fx, gm2yoy, gm2yoyfx, us, ez, jp, uk, gcb, gcbyoy, daily] = await Promise.all([
+    fetchSeries("gm2", "btc"),
+    fetchSeries("gm2fx", "btc"),
+    fetchSeries("gm2yoy", "btc"),
+    fetchSeries("gm2yoyfx", "btc"),
+    fetchSeries("gm2us", "btc"),
+    fetchSeries("gm2ez", "btc"),
+    fetchSeries("gm2jp", "btc"),
+    fetchSeries("gm2uk", "btc"),
+    fetchSeries("gcb", "btc"),
+    fetchSeries("gcbyoy", "btc"),
+    fetchClosedDaily("btc"),
+  ]);
+  if (!gm2.length || !gcb.length) return ctx.print("no global liquidity data", "err");
+  const list = computeCycles(daily.times, daily.closes);
+  const p1 = (x: number | null) => (x === null ? "—" : `${x >= 0 ? "+" : ""}${x.toFixed(1)}%`);
+
+  // Growth at the turning points: in USD, at constant FX, and central banks.
+  const head = ["halving", "top", "low"].map((h) => h.padStart(7)).join(" ");
+  ctx.print(`  #   ${"G4 M2 in USD".padEnd(23)}  ${"G4 M2, constant FX".padEnd(23)}  G3 central banks`, "info");
+  ctx.print(`      ${head}  ${head}  ${head}`, "info");
+  for (const c of list) {
+    const low = c.complete && c.low ? c.low.time : null;
+    const cells = (pts: typeof gm2) =>
+      [c.halving.time, c.top.time, low].map((t) => (t === null ? "—" : p1(pointAt(pts, t))).padStart(7)).join(" ");
+    ctx.print(`  ${c.n}   ${cells(gm2yoy)}  ${cells(gm2yoyfx)}  ${cells(gcbyoy)}${c.complete ? "" : " *"}`, "out");
+  }
+
+  const btcM = monthly(daily.times.map((t, i) => ({ time: t, value: daily.closes[i] })));
+  printLagTable(ctx, btcM, [
+    ["12m G4 M2 in USD", monthly(gm2), 12],
+    ["1m G4 M2 in USD", monthly(gm2), 1],
+    ["1m G4 M2 const FX", monthly(gm2fx), 1],
+    ["1m G3 central banks", monthly(gcb), 1],
+  ]);
+  ctx.print(
+    "  USD vs constant-FX rows: a link that vanishes at constant FX is the dollar, not money growth",
+    "info"
+  );
+
+  // How much of "global liquidity" is the dollar.
+  const fxPart = gm2yoy.length && gm2yoyfx.length ? gm2yoy.at(-1)!.value - gm2yoyfx.at(-1)!.value : NaN;
+  const tot = gm2.at(-1)!.value;
+  const share = (p: typeof us) => `${((p.at(-1)!.value / tot) * 100).toFixed(0)}%`;
+  ctx.print(
+    `now: G4 M2 $${(tot / 1000).toFixed(1)}T (US ${share(us)} · euro ${share(ez)} · Japan ${share(jp)} · UK ${share(uk)}) · ${p1(gm2yoy.at(-1)!.value)} in USD, ${p1(gm2yoyfx.at(-1)!.value)} at constant FX → the dollar moved it ${p1(fxPart)}`,
+    "out"
+  );
+  ctx.print(
+    `     G3 central-bank assets $${(gcb.at(-1)!.value / 1000).toFixed(1)}T, ${p1(gcbyoy.at(-1)!.value)} over 12 months (data to ${isoDate(gm2.at(-1)!.time - 63 * DAY).slice(0, 7)})`,
+    "out"
+  );
+  ctx.print(
+    "China is not included (no keyless M2 history) — it is roughly a third of world broad money · * = live cycle",
     "info"
   );
 }

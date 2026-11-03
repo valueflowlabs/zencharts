@@ -24,6 +24,19 @@
 //                 General Account (WTREGEN) − overnight reverse repo
 //                 (RRPONTSYD). Weekly (Wednesday), published Thursday: + 1 day.
 //       netliqyoy netliq, % change over 52 weeks.
+//   - global liquidity (macro): G4 broad money and G3 central-bank assets in
+//     USD, monthly, each month stamped when its last component is published
+//     (month start + 9 weeks):
+//       gm2       US M2 (FRED) + euro-area M2 (ECB data API) + Japan M2 (BoJ
+//                 stat-search API) + UK M4 (BoE database), $bn at month-end FX
+//       gm2yoy    gm2, % over 12 months
+//       gm2fx     gm2 at today's exchange rates: money without the dollar's swings
+//       gm2yoyfx  gm2fx, % over 12 months
+//       gm2us / gm2ez / gm2jp / gm2uk  the components, $bn
+//       gcb       Fed + ECB + BoJ total assets, $bn at month-end FX
+//       gcbyoy    gcb, % over 12 months
+//     China is not included: no keyless source has its M2 history (FRED's
+//     ends 2019, DBnomics' NBS copy holds 13 stale months).
 //
 // Note: Binance futures (fapi) geo-blocks some regions, including US cloud
 // IPs; on Vercel pin the function region to the EU (e.g. fra1).
@@ -34,8 +47,13 @@ import { DAY } from "./time";
 import type { Point } from "./indicators/align";
 
 export type SeriesId = "funding" | "dvol" | MiningId | MacroId;
-export type MacroId = "m2" | "m2yoy" | "netliq" | "netliqyoy";
-const MACRO_IDS: MacroId[] = ["m2", "m2yoy", "netliq", "netliqyoy"];
+export type MacroId = "m2" | "m2yoy" | "netliq" | "netliqyoy" | GlobalId;
+export type GlobalId =
+  | "gm2" | "gm2fx" | "gm2yoy" | "gm2yoyfx" | "gm2us" | "gm2ez" | "gm2jp" | "gm2uk" | "gcb" | "gcbyoy";
+const GLOBAL_IDS: GlobalId[] = [
+  "gm2", "gm2fx", "gm2yoy", "gm2yoyfx", "gm2us", "gm2ez", "gm2jp", "gm2uk", "gcb", "gcbyoy",
+];
+const MACRO_IDS: MacroId[] = ["m2", "m2yoy", "netliq", "netliqyoy", ...GLOBAL_IDS];
 export type MiningId = "hashrate" | "revenue" | "hashprice" | "feeshare";
 const MINING_IDS: MiningId[] = ["hashrate", "revenue", "hashprice", "feeshare"];
 export const SERIES_IDS: SeriesId[] = ["funding", "dvol", ...MINING_IDS, ...MACRO_IDS];
@@ -160,7 +178,7 @@ async function fred(id: string): Promise<{ time: number; value: number }[]> {
 const pctChange = (pts: Point[], lag: number): Point[] =>
   pts.slice(lag).map((p, i) => ({ time: p.time, value: (p.value / pts[i].value - 1) * 100 }));
 
-async function fetchMacro(): Promise<Record<MacroId, Point[]>> {
+async function fetchMacro(): Promise<Record<"m2" | "m2yoy" | "netliq" | "netliqyoy", Point[]>> {
   const [m2, walcl, tga, rrp] = await Promise.all([
     fred("M2SL"),
     fred("WALCL"),
@@ -184,13 +202,127 @@ async function fetchMacro(): Promise<Record<MacroId, Point[]>> {
   return { m2: known(m2), m2yoy, netliq, netliqyoy: pctChange(netliq, 52) };
 }
 
+// ---- global liquidity ------------------------------------------------------------
+
+const monthKey = (t: number) => {
+  const d = new Date(t * 1000);
+  return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1) / 1000;
+};
+const ym = (y: number, m: number) => Date.UTC(y, m - 1, 1) / 1000;
+
+// ECB data API, SDMX CSV: TIME_PERIOD "YYYY-MM", OBS_VALUE.
+async function ecbMonthly(key: string): Promise<Map<number, number>> {
+  const csv = await fetchText(`https://data-api.ecb.europa.eu/service/data/${key}?format=csvdata`);
+  const [head, ...rows] = csv.trim().split("\n");
+  const cols = head.split(",");
+  const ti = cols.indexOf("TIME_PERIOD");
+  const vi = cols.indexOf("OBS_VALUE");
+  const out = new Map<number, number>();
+  for (const r of rows) {
+    const c = r.split(",");
+    const [y, m] = c[ti].split("-").map(Number);
+    const v = Number(c[vi]);
+    if (y && m && Number.isFinite(v)) out.set(ym(y, m), v);
+  }
+  return out;
+}
+
+// BoJ stat-search API: parallel SURVEY_DATES (YYYYMM) and VALUES arrays.
+async function bojMonthly(db: string, code: string): Promise<Map<number, number>> {
+  const json = await fetchJson(
+    `https://www.stat-search.boj.or.jp/api/v1/getDataCode?format=json&lang=en&db=${db}&code=${code}`
+  );
+  const v = json?.RESULTSET?.[0]?.VALUES;
+  const out = new Map<number, number>();
+  (v?.SURVEY_DATES ?? []).forEach((d: number, i: number) => {
+    const x = Number(v.VALUES[i]);
+    if (Number.isFinite(x) && v.VALUES[i] !== null) out.set(ym(Math.floor(d / 100), d % 100), x);
+  });
+  return out;
+}
+
+// BoE database CSV: "DATE,CODE" then "31 Jan 2024,3001413".
+async function boeMonthly(code: string): Promise<Map<number, number>> {
+  const csv = await fetchText(
+    `https://www.bankofengland.co.uk/boeapps/database/_iadb-fromshowcolumns.asp?csv.x=yes&Datefrom=01/Jan/1990&Dateto=now&SeriesCodes=${code}&CSVF=TN&UsingCodes=Y`
+  );
+  const out = new Map<number, number>();
+  for (const line of csv.trim().split("\n").slice(1)) {
+    const [date, v] = line.split(",");
+    const t = Date.parse(`${date} UTC`) / 1000;
+    if (Number.isFinite(t) && Number.isFinite(Number(v))) out.set(monthKey(t), Number(v));
+  }
+  return out;
+}
+
+// Last value in each calendar month (month-end FX, end-of-month balances).
+function monthEnd(pts: { time: number; value: number }[]): Map<number, number> {
+  const out = new Map<number, number>();
+  for (const p of pts) out.set(monthKey(p.time), p.value);
+  return out;
+}
+
+async function fetchGlobal(): Promise<Record<GlobalId, Point[]>> {
+  const [usM2, ezM2, jpM2, ukM4, eurusd, usdjpy, gbpusd, fed, ecbA, bojA] = await Promise.all([
+    fred("M2SL"), // $bn
+    ecbMonthly("BSI/M.U2.Y.V.M20.X.1.U2.2300.Z01.E"), // € millions, SA
+    bojMonthly("MD02", "MAM1NAM2M2MO"), // ¥100 million, average outstanding
+    boeMonthly("LPMAUYN"), // £ millions, SA
+    fred("DEXUSEU"), // $ per €
+    fred("DEXJPUS"), // ¥ per $
+    fred("DEXUSUK"), // $ per £
+    fred("WALCL"), // $ millions, weekly
+    fred("ECBASSETSW"), // € millions, weekly
+    fred("JPNASSETS"), // ¥100 million, monthly
+  ]);
+  const us = new Map(usM2.map((p) => [monthKey(p.time), p.value]));
+  const eur = monthEnd(eurusd);
+  const jpy = monthEnd(usdjpy);
+  const gbp = monthEnd(gbpusd);
+  const fedM = monthEnd(fed);
+  const ecbM = monthEnd(ecbA);
+  const bojM = monthEnd(bojA);
+  const last = <T,>(m: Map<number, T>) => [...m.values()].at(-1)!;
+  const fxNow = { eur: last(eur), jpy: last(jpy), gbp: last(gbp) };
+
+  const known = (t: number) => t + 63 * DAY; // month start + 9 weeks
+  const out = Object.fromEntries(GLOBAL_IDS.map((g) => [g, [] as Point[]])) as Record<GlobalId, Point[]>;
+  for (const [t, u] of [...us.entries()].sort((a, b) => a[0] - b[0])) {
+    const e = ezM2.get(t);
+    const j = jpM2.get(t);
+    const k = ukM4.get(t);
+    const fx = { eur: eur.get(t), jpy: jpy.get(t), gbp: gbp.get(t) };
+    if (e === undefined || j === undefined || k === undefined || !fx.eur || !fx.jpy || !fx.gbp) continue;
+    const parts = { us: u, ez: (e / 1000) * fx.eur, jp: (j / 10) / fx.jpy, uk: (k / 1000) * fx.gbp };
+    const time = known(t);
+    out.gm2us.push({ time, value: parts.us });
+    out.gm2ez.push({ time, value: parts.ez });
+    out.gm2jp.push({ time, value: parts.jp });
+    out.gm2uk.push({ time, value: parts.uk });
+    out.gm2.push({ time, value: parts.us + parts.ez + parts.jp + parts.uk });
+    out.gm2fx.push({ time, value: u + (e / 1000) * fxNow.eur + (j / 10) / fxNow.jpy + (k / 1000) * fxNow.gbp });
+  }
+  for (const [t, f] of [...fedM.entries()].sort((a, b) => a[0] - b[0])) {
+    const e = ecbM.get(t);
+    const j = bojM.get(t);
+    const fx = { eur: eur.get(t), jpy: jpy.get(t) };
+    if (e === undefined || j === undefined || !fx.eur || !fx.jpy) continue;
+    out.gcb.push({ time: known(t), value: f / 1000 + (e / 1000) * fx.eur + (j / 10) / fx.jpy });
+  }
+  out.gm2yoy = pctChange(out.gm2, 12);
+  out.gm2yoyfx = pctChange(out.gm2fx, 12);
+  out.gcbyoy = pctChange(out.gcb, 12);
+  return out;
+}
+
 export async function getSeries(id: SeriesId, symbol: string): Promise<Point[]> {
   if (MACRO_IDS.includes(id as MacroId)) {
     const hit = cache.get(`${id}:macro`);
     if (hit && Date.now() - hit.at < TTL_MS) return hit.data;
-    const all = await fetchMacro();
-    for (const m of MACRO_IDS) cache.set(`${m}:macro`, { at: Date.now(), data: all[m] });
-    return all[id as MacroId];
+    const isGlobal = GLOBAL_IDS.includes(id as GlobalId);
+    const all: Partial<Record<MacroId, Point[]>> = isGlobal ? await fetchGlobal() : await fetchMacro();
+    for (const [m, data] of Object.entries(all)) cache.set(`${m}:macro`, { at: Date.now(), data: data! });
+    return all[id as MacroId]!;
   }
   const inst = getInstrument(symbol);
   const key = `${id}:${inst.id}`;

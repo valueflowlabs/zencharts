@@ -98,6 +98,8 @@ interface ExternalData {
   hashrate?: Point[]; // EH/s (BTC)
   m2yoy?: Point[]; // US M2, % over 12 months (macro)
   netliqyoy?: Point[]; // Fed net liquidity, % over 52 weeks (macro)
+  gm2yoy?: Point[]; // G4 broad money in USD, % over 12 months (macro)
+  gcbyoy?: Point[]; // Fed + ECB + BoJ assets in USD, % over 12 months (macro)
 }
 
 export default function Chart({ timeframe }: { timeframe: TimeframeKey }) {
@@ -353,8 +355,9 @@ export default function Chart({ timeframe }: { timeframe: TimeframeKey }) {
       liquidity:
         s.overlays.liquidity &&
         (s.timeframe === "1d" || s.timeframe === "1w") &&
-        !!ext?.m2yoy &&
-        !!ext?.netliqyoy,
+        (s.overlays.liquidityScope === "global"
+          ? !!ext?.gm2yoy && !!ext?.gcbyoy
+          : !!ext?.m2yoy && !!ext?.netliqyoy),
     };
     const layout = paneLayout(PANE_ORDER.filter((id) => want[id]));
     chart.priceScale("right").applyOptions({ scaleMargins: layout.candles });
@@ -402,14 +405,18 @@ export default function Chart({ timeframe }: { timeframe: TimeframeKey }) {
       realised.setData([]);
     }
 
-    // Liquidity: M2 12-month growth as bars, net liquidity 52-week growth as a
-    // line, both in % and both as known on each bar (values are publish-dated).
+    // Liquidity, both in % and as known on each bar (values are publish-dated).
+    // US: M2 12-month growth as bars, Fed net liquidity 52-week growth as a
+    // line. Global: G4 broad money in USD as bars, G3 central banks as a line.
     const m2 = m2Ref.current;
     const netLiq = netLiqRef.current;
     if (m2 && netLiq) {
       m2.applyOptions({ visible: want.liquidity });
       netLiq.applyOptions({ visible: want.liquidity, color: s.theme.page.accent });
-      if (want.liquidity && ext?.m2yoy && ext.netliqyoy) {
+      const global = s.overlays.liquidityScope === "global";
+      const bars = global ? ext?.gm2yoy : ext?.m2yoy;
+      const line = global ? ext?.gcbyoy : ext?.netliqyoy;
+      if (want.liquidity && bars && line) {
         // Monthly / weekly releases hold until the next one: each bar shows
         // the latest value published by its close.
         const step = BAR_SECONDS[s.timeframe];
@@ -419,13 +426,13 @@ export default function Chart({ timeframe }: { timeframe: TimeframeKey }) {
             return v === null ? [] : [{ time: t, value: v }];
           });
         m2.setData(
-          held(ext.m2yoy).map((p) => ({
+          held(bars).map((p) => ({
             time: asTime(p.time),
             value: p.value,
             color: soften(p.value >= 0 ? c.up : c.down),
           }))
         );
-        netLiq.setData(toLine(held(ext.netliqyoy)));
+        netLiq.setData(toLine(held(line)));
       } else {
         m2.setData([]);
         netLiq.setData([]);
@@ -703,6 +710,7 @@ export default function Chart({ timeframe }: { timeframe: TimeframeKey }) {
   const needDvol = overlays.dvol || (overlays.cone && overlays.coneModel === "dvol");
   const needMiners = overlays.miners && symbol === "btc";
   const needLiquidity = overlays.liquidity;
+  const liquidityScope = overlays.liquidityScope;
   useEffect(() => {
     if (externalRef.current.symbol !== symbol) {
       externalRef.current = { symbol };
@@ -711,7 +719,7 @@ export default function Chart({ timeframe }: { timeframe: TimeframeKey }) {
     const ext = externalRef.current;
     const controller = new AbortController();
     const load = async (
-      key: "funding" | "dvol" | "revenue" | "hashrate" | "m2yoy" | "netliqyoy"
+      key: "funding" | "dvol" | "revenue" | "hashrate" | "m2yoy" | "netliqyoy" | "gm2yoy" | "gcbyoy"
     ) => {
       try {
         const raw = await fetchSeries(key, symbol, controller.signal);
@@ -728,10 +736,16 @@ export default function Chart({ timeframe }: { timeframe: TimeframeKey }) {
     if (needDvol && !ext.dvol) load("dvol");
     if (needMiners && !ext.revenue) load("revenue");
     if (needMiners && !ext.hashrate) load("hashrate");
-    if (needLiquidity && !ext.m2yoy) load("m2yoy");
-    if (needLiquidity && !ext.netliqyoy) load("netliqyoy");
+    if (needLiquidity && liquidityScope === "us") {
+      if (!ext.m2yoy) load("m2yoy");
+      if (!ext.netliqyoy) load("netliqyoy");
+    }
+    if (needLiquidity && liquidityScope === "global") {
+      if (!ext.gm2yoy) load("gm2yoy");
+      if (!ext.gcbyoy) load("gcbyoy");
+    }
     return () => controller.abort();
-  }, [symbol, needFunding, needDvol, needMiners, needLiquidity]);
+  }, [symbol, needFunding, needDvol, needMiners, needLiquidity, liquidityScope]);
 
   // (Re)load data whenever the instrument or timeframe changes, then poll the
   // last candle.
