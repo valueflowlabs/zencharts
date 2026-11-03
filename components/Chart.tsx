@@ -9,6 +9,7 @@ import {
   PriceScaleMode,
   type IChartApi,
   type ISeriesApi,
+  type SeriesMarker,
   type UTCTimestamp,
 } from "lightweight-charts";
 import type { TimeframeKey } from "@/lib/timeframes";
@@ -26,9 +27,17 @@ import {
   annualiseFunding,
   realisedVolSeries,
 } from "@/lib/indicators/derivatives";
+import {
+  buildGhosts,
+  computeCycles,
+  daysBetween,
+  nextHalvingEstimate,
+  phaseAt,
+  type Phase,
+} from "@/lib/indicators/cycles";
 import { snapToBars, valueAt, type Point } from "@/lib/indicators/align";
 import { fetchCandles, fetchSeries } from "@/lib/data";
-import { BAR_SECONDS, DAY } from "@/lib/time";
+import { BAR_SECONDS, DAY, barStart } from "@/lib/time";
 
 // How often we refresh the latest candle so the chart feels "live",
 // keyed by timeframe. Lower timeframes update more often.
@@ -98,6 +107,10 @@ export default function Chart({ timeframe }: { timeframe: TimeframeKey }) {
   const coneRefs = useRef<ISeriesApi<"Line">[]>([]);
   // Power law: one line per CORRIDOR_QUANTILES entry.
   const powerLawRefs = useRef<ISeriesApi<"Line">[]>([]);
+  // Halving-cycle phase shading behind the candles: one filled area per phase.
+  const cycleShadeRefs = useRef<Record<Phase, ISeriesApi<"Area">> | null>(null);
+  // Earlier cycles laid over the live one ("cycles align"), oldest first.
+  const ghostRefs = useRef<ISeriesApi<"Line">[]>([]);
   const candlesRef = useRef<Candle[]>([]);
   const externalRef = useRef<ExternalData>({ symbol: "" });
   const [externalVersion, setExternalVersion] = useState(0);
@@ -145,6 +158,20 @@ export default function Chart({ timeframe }: { timeframe: TimeframeKey }) {
       },
     });
 
+    // Series paint in creation order, so the cycle shading comes first to sit
+    // behind the candles. Each phase is an area at 1 inside the phase and 0
+    // outside, on a hidden full-height scale: solid bands at any zoom, where
+    // histogram bars leave gaps on the weekly chart.
+    const shadeArea = () =>
+      chart.addAreaSeries({
+        ...QUIET_LINE,
+        priceScaleId: "cycles",
+        visible: false,
+        lineColor: "rgba(0,0,0,0)",
+      });
+    const cycleShades = { rise: shadeArea(), fall: shadeArea(), base: shadeArea() };
+    chart.priceScale("cycles").applyOptions({ visible: false, scaleMargins: { top: 0, bottom: 0 } });
+
     const series = chart.addCandlestickSeries({
       upColor: c.up,
       downColor: c.down,
@@ -183,9 +210,21 @@ export default function Chart({ timeframe }: { timeframe: TimeframeKey }) {
     powerLawRefs.current = CORRIDOR_QUANTILES.map(() =>
       chart.addLineSeries({ ...QUIET_LINE, visible: false })
     );
+    // Three earlier cycles at most; labelled on the price axis (#1, #2, #3).
+    // They stay out of autoscale: cycle 1's ×93 path projects to millions and
+    // would squash the candles; the axis fits price, ghosts may run off-top.
+    ghostRefs.current = Array.from({ length: 3 }, () =>
+      chart.addLineSeries({
+        ...QUIET_LINE,
+        lastValueVisible: true,
+        visible: false,
+        autoscaleInfoProvider: () => null,
+      })
+    );
 
     chartRef.current = chart;
     seriesRef.current = series;
+    cycleShadeRefs.current = cycleShades;
 
     return () => {
       chart.remove();
@@ -197,6 +236,8 @@ export default function Chart({ timeframe }: { timeframe: TimeframeKey }) {
       realisedRef.current = null;
       coneRefs.current = [];
       powerLawRefs.current = [];
+      cycleShadeRefs.current = null;
+      ghostRefs.current = [];
     };
   }, []);
 
@@ -314,6 +355,131 @@ export default function Chart({ timeframe }: { timeframe: TimeframeKey }) {
     }
   }, []);
 
+  // "cycles align": each earlier cycle's path from its halving (or bear low),
+  // scaled to the live anchor's price and laid over the live cycle, running on
+  // into the future on the bar grid. The next halving is marked on the line
+  // that reaches it.
+  const drawGhosts = useCallback((cycles: ReturnType<typeof computeCycles>) => {
+    const lines = ghostRefs.current;
+    if (!lines.length) return;
+    const s = settingsRef.current;
+    const candles = candlesRef.current;
+    const closed = candles.slice(0, -1);
+    const last = candles[candles.length - 1];
+    const align = s.overlays.cyclesAlign;
+    const step = BAR_SECONDS[s.timeframe];
+    const next = nextHalvingEstimate();
+    const grid = candles.map((k) => k.time);
+    if (last) for (let t = last.time + step; t <= next.time + 90 * DAY; t += step) grid.push(t);
+    const built =
+      cycles.length && align !== "off"
+        ? buildGhosts(closed.map((k) => k.time), closed.map((k) => k.close), cycles, align, grid)
+        : null;
+    const ghosts = built?.ghosts.slice(-lines.length) ?? [];
+    const accent = s.theme.page.accent;
+    const alpha = ["44", "77", "aa"]; // older cycles fainter
+    lines.forEach((line, i) => {
+      const g = ghosts[i];
+      line.applyOptions({
+        visible: !!g,
+        title: g ? `#${g.n}` : "",
+        color: soften(accent, alpha[alpha.length - ghosts.length + i] ?? "88"),
+        lineStyle: LineStyle.Dashed,
+      });
+      line.setData(g ? g.points.map((p) => ({ time: asTime(p.time), value: p.value })) : []);
+      line.setMarkers([]);
+    });
+    // The next halving, on the first line that reaches it.
+    const hi = ghosts.findIndex((g) => g.points[g.points.length - 1].time >= next.time);
+    if (hi >= 0) {
+      const at = ghosts[hi].points.find((p) => p.time >= next.time)!;
+      lines[hi].setMarkers([
+        {
+          time: asTime(at.time),
+          position: "belowBar",
+          shape: "arrowUp",
+          color: accent,
+          text: `halving ${next.n} ≈ ${new Date(next.time * 1000).toISOString().slice(0, 7)}`,
+        },
+      ]);
+    }
+  }, []);
+
+  // Halving cycles (BTC 1D/1W): markers for halvings, tops and lows, and phase
+  // shading behind the candles. Turning points come from the chart's closed
+  // bars. Returns whether anything is drawn.
+  const drawCycles = useCallback((): boolean => {
+    const series = seriesRef.current;
+    const shades = cycleShadeRefs.current;
+    if (!series || !shades) return false;
+    const s = settingsRef.current;
+    const c = s.theme.chart;
+    const candles = candlesRef.current;
+    const allowed =
+      s.overlays.cycles && s.symbol === "btc" && (s.timeframe === "1d" || s.timeframe === "1w");
+    const closed = candles.slice(0, -1);
+    const cycles = allowed
+      ? computeCycles(closed.map((k) => k.time), closed.map((k) => k.close))
+      : [];
+    const phases = Object.keys(shades) as Phase[];
+    for (const p of phases) shades[p].applyOptions({ visible: cycles.length > 0 });
+    drawGhosts(cycles);
+    if (!cycles.length) {
+      for (const p of phases) shades[p].setData([]);
+      series.setMarkers([]);
+      return false;
+    }
+
+    const tint: Record<Phase, string> = {
+      rise: soften(c.up, "14"),
+      fall: soften(c.down, "14"),
+      base: soften(c.text, "10"),
+    };
+    let ci = 0;
+    const phaseOf = candles.map((k) => {
+      while (ci < cycles.length - 1 && k.time >= cycles[ci].end) ci++;
+      return phaseAt(cycles[ci], k.time);
+    });
+    for (const p of phases) {
+      shades[p].applyOptions({ topColor: tint[p], bottomColor: tint[p] });
+      shades[p].setData(
+        candles.map((k, i) => ({ time: asTime(k.time), value: phaseOf[i] === p ? 1 : 0 }))
+      );
+    }
+
+    // Markers must sit on bar times, sorted. On 1W the halving bar is the week
+    // that contains it.
+    const at = (t: number) => asTime(s.timeframe === "1w" ? barStart(t, "1w") : t);
+    const markers: SeriesMarker<UTCTimestamp>[] = [];
+    for (const cy of cycles) {
+      markers.push({
+        time: at(cy.halving.time),
+        position: "belowBar",
+        shape: "arrowUp",
+        color: s.theme.page.accent,
+        text: `halving ${cy.n}`,
+      });
+      markers.push({
+        time: asTime(cy.top.time),
+        position: "aboveBar",
+        shape: "arrowDown",
+        color: c.up,
+        text: `${cy.complete ? "top" : "high so far"} +${daysBetween(cy.halving.time, cy.top.time)}d`,
+      });
+      if (cy.complete && cy.low) {
+        markers.push({
+          time: asTime(cy.low.time),
+          position: "belowBar",
+          shape: "arrowUp",
+          color: c.down,
+          text: `low ${Math.round((cy.low.price / cy.top.price - 1) * 100)}%`,
+        });
+      }
+    }
+    series.setMarkers(markers.sort((a, b) => a.time - b.time));
+    return true;
+  }, [drawGhosts]);
+
   // Overlays on the price scale: volatility cone and power-law corridor.
   const drawForecasts = useCallback(() => {
     const chart = chartRef.current;
@@ -394,11 +560,14 @@ export default function Chart({ timeframe }: { timeframe: TimeframeKey }) {
       );
     });
 
-    // A power law is a straight line only on a log axis.
+    const cyclesShown = drawCycles();
+
+    // A power law is a straight line only on a log axis, and cycles compare
+    // multiples, so either one switches the axis to log.
     chart.priceScale("right").applyOptions({
-      mode: fit ? PriceScaleMode.Logarithmic : PriceScaleMode.Normal,
+      mode: fit || cyclesShown ? PriceScaleMode.Logarithmic : PriceScaleMode.Normal,
     });
-  }, []);
+  }, [drawCycles]);
 
   const redraw = useCallback(() => {
     drawPanes();

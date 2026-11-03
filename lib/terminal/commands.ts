@@ -27,6 +27,17 @@ import {
   scoreDvol,
   scoreFunding,
 } from "../indicators/derivatives";
+import {
+  ALIGNS,
+  HALVINGS,
+  computeCycles,
+  cycleNow,
+  daysBetween,
+  issuanceShock,
+  nextHalvingEstimate,
+  scoreCycles,
+  type Align,
+} from "../indicators/cycles";
 import { valueAt } from "../indicators/align";
 import {
   DEFAULT_FEE_BP,
@@ -198,7 +209,7 @@ const num = (x: number, digits = 2) =>
 // Shared on/off/toggle handling. Returns true if the sub-command was handled.
 function handleSwitch(
   ctx: CommandContext,
-  key: "cone" | "powerlaw" | "funding" | "dvol",
+  key: "cone" | "powerlaw" | "cycles" | "funding" | "dvol",
   sub: string | undefined,
   note?: string
 ): boolean {
@@ -361,6 +372,179 @@ const powerlaw: Command = {
   },
   complete: (preceding) => (preceding.length === 0 ? [...SWITCH, "score"] : []),
 };
+
+const usd = (x: number) =>
+  x >= 1000 ? `${Math.round(x).toLocaleString("en-US")}` : x.toFixed(x >= 10 ? 0 : 2);
+
+const cycles: Command = {
+  name: "cycles",
+  aliases: ["halving"],
+  summary: "Halving cycles: tops, lows, overlay of past cycles, self-test (BTC)",
+  usage: "cycles | cycles on|off | cycles align halving|low|off | cycles score",
+  run: async (ctx) => {
+    const [sub, arg] = ctx.args;
+    const note =
+      "on BTC 1D/1W: ▲ halvings · ▼ cycle tops · ▲ lows · shading rise → fall → base; the price axis switches to log while on";
+    if (handleSwitch(ctx, "cycles", sub, note)) {
+      if (sub !== "off" && ctx.config.symbol !== "btc") {
+        ctx.print("cycles are drawn on BTC only — try 'symbol btc'", "info");
+      }
+      return;
+    }
+    if (sub === "align") {
+      if (arg !== "off" && !ALIGNS.includes(arg as Align)) {
+        return ctx.print("usage: cycles align halving|low|off", "err");
+      }
+      ctx.config.setOverlays(arg === "off" ? { cyclesAlign: "off" } : { cycles: true, cyclesAlign: arg as Align });
+      ctx.print(`cycles align → ${arg}`, "out");
+      if (arg !== "off") {
+        ctx.print(
+          arg === "halving"
+            ? "earlier cycles from their halving, scaled to halving 4's price and laid over the live cycle"
+            : "earlier cycles from their bear-market low, scaled to the 2022 low and laid over the live cycle",
+          "info"
+        );
+      }
+      return;
+    }
+    if (sub && sub !== "score") return ctx.print(`unknown: cycles ${sub} (try 'help cycles')`, "err");
+    if (ctx.config.symbol !== "btc") {
+      return ctx.print("halving cycles are a BTC thing — try 'symbol btc'", "err");
+    }
+    const { times, closes } = await fetchClosedDaily("btc");
+    const list = computeCycles(times, closes);
+    if (!list.length) return ctx.print("not enough history", "err");
+    if (sub === "score") return printCycleScore(ctx, times, closes, list);
+
+    const done = list.filter((c) => c.complete);
+    const now = cycleNow(times, closes, list);
+    if (now) {
+      const ahead = now.peers.filter((p) => now.sinceHalving > p.sinceHalving).map((p) => p.n);
+      const behind = now.peers.filter((p) => now.sinceHalving <= p.sinceHalving).map((p) => p.n);
+      const vs = [
+        ahead.length ? `ahead of #${ahead.join(", #")}` : "",
+        behind.length ? `behind #${behind.join(", #")}` : "",
+      ].filter(Boolean).join(", ");
+      ctx.print(
+        `day ${now.day} of cycle ${now.cycle.n} · ${pct(now.sinceHalving, 0)} since the halving · ${pct(now.fromTop, 0)} from the high so far${vs ? ` · ${vs} at the same day` : ""}`,
+        "out"
+      );
+      if (now.peers.length) {
+        ctx.print(
+          `  earlier cycles at day ${now.day}: ${now.peers.map((p) => `#${p.n} ${pct(p.sinceHalving, 0)}`).join(" · ")}`,
+          "info"
+        );
+      }
+    }
+
+    // Fits the console's ~60 columns; +d = days since the previous column's date.
+    ctx.print("  # halving    top          +d    ×  low         +d  drawdown", "info");
+    for (const c of list) {
+      const toTop = daysBetween(c.halving.time, c.top.time);
+      const mult = `×${Math.round(c.top.price / c.halving.price)}`;
+      const low =
+        c.complete && c.low
+          ? `${isoDate(c.low.time)} ${String(daysBetween(c.top.time, c.low.time)).padStart(4)}  ${pct(c.low.price / c.top.price - 1, 0)}`
+          : "—";
+      ctx.print(
+        `  ${c.n} ${isoDate(c.halving.time)} ${isoDate(c.top.time)}${c.complete ? " " : "*"} ${String(toTop).padStart(4)} ${mult.padStart(4)}  ${low}`,
+        "out"
+      );
+    }
+    ctx.print(
+      `  prices: ${list.map((c) => `#${c.n} ${usd(c.halving.price)} → ${usd(c.top.price)}`).join(" · ")}`,
+      "out"
+    );
+
+    // Timing as a window, not a date.
+    if (done.length && now) {
+      const days = done.map((c) => daysBetween(c.halving.time, c.top.time));
+      const lo = Math.min(...days);
+      const hi = Math.max(...days);
+      const h = now.cycle.halving.time;
+      const topDay = daysBetween(h, now.cycle.top.time);
+      ctx.print(
+        `timing: halving → top took ${lo}–${hi} days → window for #${now.cycle.n} ${isoDate(h + lo * DAY)} … ${isoDate(h + hi * DAY)} · high so far on day ${topDay} (${topDay >= lo && topDay <= hi ? "inside" : "outside"})`,
+        "out"
+      );
+    }
+
+    // Diminishing returns: the honest forecast is "smaller again".
+    const mults = list.map((c) => c.top.price / c.halving.price);
+    const decay = mults.slice(1, done.length).map((m, i) => mults[i] / m);
+    if (decay.length) {
+      const g = Math.exp(decay.reduce((s, x) => s + Math.log(x), 0) / decay.length);
+      const nextMult = mults[done.length - 1] / g;
+      ctx.print(
+        `returns: top multiple ${done.map((_, i) => `×${Math.round(mults[i])}`).join(" → ")} (each ÷${decay.map((x) => x.toFixed(1)).join(", ÷")}) · same decay → ~×${nextMult.toFixed(1)} for #${done.length + 1}${list.length > done.length ? `, high so far ×${mults[done.length].toFixed(1)}` : ""}`,
+        "out"
+      );
+    }
+
+    // Supply shock: why the halving should matter less each time.
+    ctx.print(
+      `supply shock (new coins/yr as % of supply, before → after): ${HALVINGS.map((h) => {
+        const s = issuanceShock(h.height);
+        return `#${h.n} ${(s.before * 100).toFixed(1)}→${(s.after * 100).toFixed(1)}%`;
+      }).join(" · ")}`,
+      "out"
+    );
+
+    const next = nextHalvingEstimate();
+    const s = issuanceShock(next.height);
+    ctx.print(
+      `next halving: block ${next.height.toLocaleString("en-US")} ≈ ${isoDate(next.time).slice(0, 7)} (10-min blocks; usually a few weeks early) · ${(s.before * 100).toFixed(2)}→${(s.after * 100).toFixed(2)}%`,
+      "out"
+    );
+    ctx.print(
+      "* = high so far: the live cycle's top and low are only known in hindsight · 3 complete cycles is a tiny sample — see 'cycles score'",
+      "info"
+    );
+  },
+  complete: (preceding) => {
+    if (preceding.length === 0) return [...SWITCH, "align", "score"];
+    if (preceding[0] === "align" && preceding.length === 1) return [...ALIGNS, "off"];
+    return [];
+  },
+};
+
+function printCycleScore(ctx: CommandContext, times: number[], closes: number[], list: ReturnType<typeof computeCycles>) {
+  ctx.print(
+    "cycle analogue vs random walk · 365-day log return, origin every 30 days, earlier cycles only",
+    "info"
+  );
+  const variants: [Align, number, string][] = [
+    ["halving", 0, "halving"],
+    ["halving", -30, "halving −30d"],
+    ["halving", 30, "halving +30d"],
+    ["low", 0, "low"],
+  ];
+  ctx.print("  anchor        origins  rmse cyc   rmse rw  wins     DM      p", "info");
+  const rows = variants.map(([a, shift, label]) => scoreCycles(times, closes, list, a, shift, label));
+  for (const r of rows) {
+    if (!r) continue;
+    ctx.print(
+      `  ${r.label.padEnd(13)} ${String(r.origins).padStart(7)}  ${num(r.rmseModel, 3).padStart(8)}  ${num(r.rmseRandomWalk, 3).padStart(8)}  ${(r.winRate * 100).toFixed(0).padStart(3)}%  ${num(r.dm.stat, 2).padStart(5)}  ${num(r.dm.p, 3).padStart(5)}`,
+      "out"
+    );
+  }
+  const base = rows[0];
+  if (base) ctx.print(`  origins ${base.from} → ${base.to} (halving anchor)`, "info");
+  const pass = rows.filter(Boolean).every((r) => r!.dm.stat < 0 && r!.dm.p < 0.05);
+  const any = rows.some((r) => r && r.dm.stat < 0 && r.dm.p < 0.05);
+  ctx.print(
+    pass
+      ? "pass: the analogue beats the random walk under every anchoring (still 3 cycles of evidence)"
+      : any
+        ? "fragile: beats the random walk under some anchorings only — the result depends on the choice"
+        : "no significant edge over the random walk at 12 months",
+    pass ? "info" : "err"
+  );
+  ctx.print(
+    "low anchors are used only after the next halving confirms them (no hindsight) · DM: negative favours the cycle analogue",
+    "info"
+  );
+}
 
 const funding: Command = {
   name: "funding",
@@ -532,6 +716,7 @@ const config: Command = {
       "out"
     );
     ctx.print(`  powerlaw = ${o.powerlaw ? "on" : "off"}`, "out");
+    ctx.print(`  cycles   = ${o.cycles ? "on" : "off"} (align ${o.cyclesAlign})`, "out");
     ctx.print(`  funding  = ${o.funding ? "on" : "off"}`, "out");
     ctx.print(`  dvol     = ${o.dvol ? "on" : "off"}`, "out");
   },
@@ -588,6 +773,7 @@ export const COMMANDS: Command[] = [
   momentum,
   cone,
   powerlaw,
+  cycles,
   funding,
   dvol,
   backtest,

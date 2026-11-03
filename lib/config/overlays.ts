@@ -7,12 +7,15 @@ import {
   isValidConeModel,
   type ConeModel,
 } from "../indicators/cone";
+import { ALIGNS, type Align } from "../indicators/cycles";
 
 export interface Overlays {
   cone: boolean; // volatility cone after the last bar
   coneModel: ConeModel;
   coneHorizon: number; // bars
   powerlaw: boolean; // power-law corridor (BTC, 1D/1W)
+  cycles: boolean; // halving-cycle markers and phase shading (BTC, 1D/1W)
+  cyclesAlign: Align | "off"; // earlier cycles laid over the live one
   funding: boolean; // funding-rate pane
   dvol: boolean; // DVOL vs realised-vol pane (BTC)
 }
@@ -22,6 +25,8 @@ export const DEFAULT_OVERLAYS: Overlays = {
   coneModel: "ewma",
   coneHorizon: DEFAULT_CONE_HORIZON,
   powerlaw: false,
+  cycles: false,
+  cyclesAlign: "off",
   funding: false,
   dvol: false,
 };
@@ -37,6 +42,8 @@ export function patchOverlays(
     isValidConeModel(next.coneModel) &&
     isValidConeHorizon(next.coneHorizon) &&
     typeof next.powerlaw === "boolean" &&
+    typeof next.cycles === "boolean" &&
+    (next.cyclesAlign === "off" || ALIGNS.includes(next.cyclesAlign)) &&
     typeof next.funding === "boolean" &&
     typeof next.dvol === "boolean";
   return valid ? next : null;
