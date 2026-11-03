@@ -43,7 +43,7 @@ export function cached<T>(key: string, ttlMs: number, load: () => Promise<T>): P
   return p;
 }
 
-async function soft<T>(p: Promise<T>): Promise<T | null> {
+export async function soft<T>(p: Promise<T>): Promise<T | null> {
   try {
     return await p;
   } catch {
@@ -85,6 +85,7 @@ export interface GtFlow {
 }
 
 export interface GtPool {
+  network: string; // GeckoTerminal network id, e.g. "solana", "eth"
   poolAddress: string;
   tokenAddress: string;
   symbol: string;
@@ -100,6 +101,11 @@ export interface GtPool {
   volume: Record<string, number>;
   flow: Record<string, GtFlow>;
 }
+
+// Token names are attacker-chosen: drop control and bidi-override characters
+// (e.g. U+202E, which flips the rest of a line) before they reach the UI.
+export const cleanName = (s: string) =>
+  s.replace(/[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u202a-\u202e\u2066-\u2069]/g, "").trim();
 
 function parseGtPools(json: any): GtPool[] {
   const tokens = new Map<string, any>();
@@ -128,10 +134,12 @@ function parseGtPools(json: any): GtPool[] {
     const vol: Record<string, number> = {};
     for (const [w, v] of Object.entries(a.volume_usd ?? {})) vol[w] = num(v) ?? 0;
     out.push({
+      network: p.relationships?.network?.data?.id ?? String(p.id ?? "").split("_")[0],
       poolAddress: a.address,
       tokenAddress,
-      symbol: t.symbol ?? String(a.name ?? "?").split(" / ")[0],
-      name: t.name ?? a.name ?? "",
+      // GeckoTerminal returns names HTML-escaped ("S&amp;P").
+      symbol: cleanName(unescapeXml(t.symbol ?? String(a.name ?? "?").split(" / ")[0])),
+      name: cleanName(unescapeXml(t.name ?? a.name ?? "")),
       icon: t.image_url && t.image_url !== "missing.png" ? t.image_url : null,
       dexId: p.relationships?.dex?.data?.id ?? "",
       createdAt: a.pool_created_at ? Date.parse(a.pool_created_at) : null,
@@ -165,6 +173,26 @@ export function gtTrendingPools(network: string) {
           `${GT}/networks/${network}/trending_pools?include=base_token`
         )
       )
+    )
+  );
+}
+
+// Trending / new pools across every network GeckoTerminal tracks, one page
+// (20 pools) per call. Feeds the trends panel.
+export function gtTrendingAll(page: number) {
+  return soft(
+    cached(`gt:trend:all:${page}`, 5 * 60_000, async () =>
+      parseGtPools(
+        await fetchJson(`${GT}/networks/trending_pools?include=base_token&page=${page}`)
+      )
+    )
+  );
+}
+
+export function gtNewAll(page: number) {
+  return soft(
+    cached(`gt:new:all:${page}`, 5 * 60_000, async () =>
+      parseGtPools(await fetchJson(`${GT}/networks/new_pools?include=base_token&page=${page}`))
     )
   );
 }
@@ -319,6 +347,106 @@ export function tgStats(url: string) {
       const extra = html.match(/<div class="tgme_page_extra">([^<]*)/)?.[1];
       const stats = extra ? parseTgExtra(extra) : null;
       return stats ? { url: `https://t.me/${id}`, ...stats } : null;
+    })
+  );
+}
+
+// ---- CoinGecko (search attention) -------------------------------------------
+
+export interface CgSearchCoin {
+  id: string;
+  symbol: string;
+  name: string;
+  thumb: string | null;
+  rank: number; // position in CoinGecko's most-searched list, 1 = top
+  marketCapRank: number | null;
+  change24h: number | null;
+  mcapUsd: number | null;
+}
+
+export interface CgCategory {
+  slug: string;
+  name: string;
+  coins: number;
+  change24h: number | null; // category market cap, %
+}
+
+// Parses "$18,558,507" style strings.
+const money = (v: unknown) => num(typeof v === "string" ? v.replace(/[$,]/g, "") : v);
+
+export function cgTrending() {
+  return soft(
+    cached("cg:trending", 5 * 60_000, async () => {
+      const json = await fetchJson("https://api.coingecko.com/api/v3/search/trending");
+      const coins: CgSearchCoin[] = (json?.coins ?? []).map((c: any, i: number) => {
+        const it = c?.item ?? {};
+        return {
+          id: String(it.id ?? ""),
+          symbol: cleanName(String(it.symbol ?? "")),
+          name: cleanName(String(it.name ?? "")),
+          thumb: typeof it.thumb === "string" ? it.thumb : null,
+          rank: (num(it.score) ?? i) + 1,
+          marketCapRank: num(it.market_cap_rank),
+          change24h: num(it.data?.price_change_percentage_24h?.usd),
+          mcapUsd: money(it.data?.market_cap),
+        };
+      });
+      const categories: CgCategory[] = (json?.categories ?? []).map((c: any) => ({
+        slug: String(c?.slug ?? ""),
+        name: cleanName(String(c?.name ?? "")),
+        coins: num(c?.coins_count) ?? 0,
+        change24h: num(c?.data?.market_cap_change_percentage_24h?.usd),
+      }));
+      return { coins, categories };
+    })
+  );
+}
+
+// ---- Google Trends (mainstream attention) -----------------------------------
+
+export interface GoogleTrend {
+  term: string;
+  traffic: number; // lower bound of Google's "approx traffic", e.g. 10000 for "10000+"
+  startedAt: number | null; // ms
+  news: { title: string; url: string; source: string } | null;
+}
+
+export const unescapeXml = (s: string) =>
+  s
+    .replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, "$1")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;|&apos;/g, "'")
+    .replace(/&#(\d+);/g, (_, d) => String.fromCodePoint(Number(d)))
+    .replace(/&#x([0-9a-f]+);/gi, (_, h) => String.fromCodePoint(parseInt(h, 16)))
+    .replace(/&amp;/g, "&");
+
+// Daily trending searches RSS: ~10 terms with traffic and the top headline.
+export function googleTrends(geo = "US") {
+  return soft(
+    cached(`google:trends:${geo}`, 10 * 60_000, async () => {
+      const xml = await fetchText(`https://trends.google.com/trending/rss?geo=${geo}`);
+      const tag = (s: string, t: string) =>
+        s.match(new RegExp(`<${t}>([\\s\\S]*?)</${t}>`))?.[1];
+      return [...xml.matchAll(/<item>([\s\S]*?)<\/item>/g)].map(([, it]): GoogleTrend => {
+        const news = it.match(/<ht:news_item>([\s\S]*?)<\/ht:news_item>/)?.[1];
+        const url = news ? unescapeXml(tag(news, "ht:news_item_url") ?? "") : "";
+        const date = tag(it, "pubDate");
+        return {
+          term: cleanName(unescapeXml(tag(it, "title") ?? "")),
+          traffic: Number((tag(it, "ht:approx_traffic") ?? "").replace(/\D/g, "")) || 0,
+          startedAt: date ? Date.parse(date) || null : null,
+          news:
+            news && /^https?:\/\//.test(url)
+              ? {
+                  title: cleanName(unescapeXml(tag(news, "ht:news_item_title") ?? "")),
+                  url,
+                  source: cleanName(unescapeXml(tag(news, "ht:news_item_source") ?? "")),
+                }
+              : null,
+        };
+      }).filter((g) => g.term);
     })
   );
 }

@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import FinderChart from "@/components/FinderChart";
+import FinderTrends, { heatLabel } from "@/components/FinderTrends";
 import {
   CHAINS,
   CHAIN_IDS,
@@ -18,9 +19,11 @@ import {
   type Telegram,
 } from "@/lib/finder/types";
 import type { TokenReport } from "@/lib/finder/scan";
+import type { TrendsResult } from "@/lib/finder/trends";
 import { fmtAgo, fmtPct, fmtPrice, fmtUsd, shortAddr } from "@/lib/finder/format";
 
 const REFRESH_MS = 60_000;
+const TRENDS_REFRESH_MS = 3 * 60_000;
 const LIQ_PRESETS = [5_000, 10_000, 25_000, 50_000, 100_000];
 const MCAP_PRESETS = [500_000, 1_000_000, 5_000_000, 20_000_000, 100_000_000];
 const GROUPS: { id: CheckGroup; label: string }[] = [
@@ -53,6 +56,8 @@ export default function Finder() {
   const [selected, setSelected] = useState<string | null>(null);
   const [lookup, setLookup] = useState("");
   const [lookupError, setLookupError] = useState<string | null>(null);
+  const [trends, setTrends] = useState<Load<TrendsResult>>({ state: "loading" });
+  const [trendsOpen, setTrendsOpen] = useState(false);
   const [, tick] = useState(0);
 
   const load = useCallback(async () => {
@@ -70,6 +75,31 @@ export default function Finder() {
     const id = setInterval(load, REFRESH_MS);
     return () => clearInterval(id);
   }, [load]);
+
+  // Trends are one cached server call, so they load with the page: the header
+  // button can name the current thing before anyone opens the panel.
+  useEffect(() => {
+    const loadTrends = () =>
+      getJson<TrendsResult>("/api/finder/trends")
+        .then((data) => setTrends({ state: "ready", data }))
+        .catch((e) => setTrends((s) => ({ ...s, state: "error", error: (e as Error).message })));
+    loadTrends();
+    const id = setInterval(loadTrends, TRENDS_REFRESH_MS);
+    return () => clearInterval(id);
+  }, []);
+
+  // ?panel=trends opens the panel on load (a shareable link).
+  useEffect(() => {
+    if (new URLSearchParams(window.location.search).get("panel") === "trends") setTrendsOpen(true);
+  }, []);
+
+  // One drawer at a time: picking a token from trends opens its checks.
+  const openToken = useCallback((c: ChainId, address: string) => {
+    setTrendsOpen(false);
+    setChain(c);
+    setSelected(address);
+  }, []);
+  const closeTrends = useCallback(() => setTrendsOpen(false), []);
 
   // Re-render the "updated Xs ago" label.
   useEffect(() => {
@@ -97,8 +127,7 @@ export default function Finder() {
         const r = await getJson<{ chain: ChainId; address: string }>(
           `/api/finder/resolve?chain=${ds.chain}&id=${encodeURIComponent(ds.id)}`
         );
-        setChain(r.chain);
-        setSelected(r.address);
+        openToken(r.chain, r.address);
       } catch (err) {
         setLookupError((err as Error).message);
       }
@@ -111,6 +140,7 @@ export default function Finder() {
     // Pick the chain from the address shape when it is unambiguous.
     if (/^0x/i.test(a) && chain === "solana") setChain("base");
     if (!/^0x/i.test(a)) setChain("solana");
+    setTrendsOpen(false);
     setSelected(a);
   };
 
@@ -122,6 +152,14 @@ export default function Finder() {
           <span className="fd-sep">/</span>
           <span>finder</span>
         </div>
+        <TrendsButton
+          data={trends.data}
+          open={trendsOpen}
+          onClick={() => {
+            setSelected(null);
+            setTrendsOpen((o) => !o);
+          }}
+        />
         <nav className="fd-chains" aria-label="Chain">
           {CHAIN_IDS.map((c) => (
             <button
@@ -146,10 +184,7 @@ export default function Finder() {
             <button
               key={`${c}:${w.address}`}
               className={`fd-chip${c === chain && selected === w.address ? " is-on" : ""}`}
-              onClick={() => {
-                setChain(c);
-                setSelected(w.address);
-              }}
+              onClick={() => openToken(c, w.address)}
               title={`${CHAINS[c].label} · ${w.site}`}
             >
               {w.symbol}
@@ -220,7 +255,7 @@ export default function Finder() {
           <div className="fd-empty">nothing passes the gates right now — try another chain or loosen the filters</div>
         )}
         {shown.map((t) => (
-          <Row key={t.address} t={t} onOpen={() => setSelected(t.address)} active={selected === t.address} />
+          <Row key={t.address} t={t} onOpen={() => openToken(chain, t.address)} active={selected === t.address} />
         ))}
       </div>
 
@@ -229,6 +264,15 @@ export default function Finder() {
         zero; a “pass” only means no red flag was found in free on-chain data. Data: GeckoTerminal,
         DexScreener, RugCheck, GoPlus, Honeypot.is. Charts: TradingView Lightweight Charts™.
       </footer>
+
+      {trendsOpen && (
+        <FinderTrends
+          data={trends.data}
+          error={trends.state === "error" && !trends.data ? trends.error : undefined}
+          onPick={openToken}
+          onClose={closeTrends}
+        />
+      )}
 
       {selected && (
         <Detail
@@ -283,6 +327,24 @@ function Row({ t, onOpen, active }: { t: FinderToken; onOpen: () => void; active
         )}
       </span>
       <span className="fd-num fd-hide-sm">{fmtAgo(m.createdAt)}</span>
+    </button>
+  );
+}
+
+// Names the current thing on the button itself, so it is one glance away.
+function TrendsButton({ data, open, onClick }: { data?: TrendsResult; open: boolean; onClick: () => void }) {
+  const now = data?.narratives[0];
+  const h = now ? heatLabel(now.heat) : null;
+  return (
+    <button className={`fd-trends-btn${open ? " is-on" : ""}`} onClick={onClick} aria-pressed={open}>
+      <span>trends</span>
+      {now && (
+        <>
+          <span className="fd-sep">·</span>
+          <span className="fd-trends-now">now: <b>{now.keyword}</b> {now.intensity}</span>
+          {h && h.tone && <span className={h.tone}>{h.text.slice(0, 1)}</span>}
+        </>
+      )}
     </button>
   );
 }
