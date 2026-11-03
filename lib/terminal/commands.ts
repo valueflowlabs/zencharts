@@ -45,6 +45,7 @@ import {
   pointAt,
   revenueMultiple,
 } from "../indicators/miners";
+import { lagCorrelation, logChange, monthly } from "../indicators/liquidity";
 import { valueAt } from "../indicators/align";
 import {
   DEFAULT_FEE_BP,
@@ -216,7 +217,7 @@ const num = (x: number, digits = 2) =>
 // Shared on/off/toggle handling. Returns true if the sub-command was handled.
 function handleSwitch(
   ctx: CommandContext,
-  key: "cone" | "powerlaw" | "cycles" | "miners" | "funding" | "dvol",
+  key: "cone" | "powerlaw" | "cycles" | "miners" | "liquidity" | "funding" | "dvol",
   sub: string | undefined,
   note?: string
 ): boolean {
@@ -387,7 +388,8 @@ const cycles: Command = {
   name: "cycles",
   aliases: ["halving"],
   summary: "Halving cycles: tops, lows, overlay of past cycles, self-test (BTC)",
-  usage: "cycles | cycles on|off | cycles align halving|low|off | cycles score | cycles miners [on|off]",
+  usage:
+    "cycles | cycles on|off | cycles align halving|low|off | cycles score | cycles miners [on|off] | cycles liquidity [on|off]",
   run: async (ctx) => {
     const [sub, arg] = ctx.args;
     const note =
@@ -402,6 +404,12 @@ const cycles: Command = {
         if (ctx.config.symbol !== "btc") ctx.print("cycles are drawn on BTC only — try 'symbol btc'", "info");
       }
       return;
+    }
+    if (sub === "liquidity") {
+      const pane = "pane: US M2 12-month growth (bars) · Fed net liquidity 52-week growth (line), % (1D/1W)";
+      if (handleSwitch(ctx, "liquidity", arg, pane)) return;
+      if (arg) return ctx.print("usage: cycles liquidity [on|off]", "err");
+      return printLiquidity(ctx);
     }
     if (sub === "miners") {
       const pane = "pane: miner revenue ÷ its 365-day mean · ▼ hash-ribbon capitulation starts (BTC, 1D/1W)";
@@ -521,12 +529,91 @@ const cycles: Command = {
     );
   },
   complete: (preceding) => {
-    if (preceding.length === 0) return [...SWITCH, "align", "score", "miners"];
+    if (preceding.length === 0) return [...SWITCH, "align", "score", "miners", "liquidity"];
     if (preceding[0] === "align" && preceding.length === 1) return [...ALIGNS, "off"];
-    if (preceding[0] === "miners" && preceding.length === 1) return ["on", "off"];
+    if ((preceding[0] === "miners" || preceding[0] === "liquidity") && preceding.length === 1)
+      return ["on", "off"];
     return [];
   },
 };
+
+const LIQ_LAGS = [0, 1, 2, 3, 6, 9, 12];
+const LIQ_SINCE = Date.UTC(2013, 0, 1) / 1000; // BTC is liquid enough to trade from here
+
+async function printLiquidity(ctx: CommandContext) {
+  ctx.print(
+    "liquidity · FRED: US M2 · Fed net liquidity = balance sheet − TGA − reverse repo · stamped when published",
+    "info"
+  );
+  const [m2, m2yoy, netliq, netliqyoy, daily] = await Promise.all([
+    fetchSeries("m2", "btc"),
+    fetchSeries("m2yoy", "btc"),
+    fetchSeries("netliq", "btc"),
+    fetchSeries("netliqyoy", "btc"),
+    fetchClosedDaily("btc"),
+  ]);
+  if (!m2.length || !netliq.length) return ctx.print("no liquidity data", "err");
+  const list = computeCycles(daily.times, daily.closes);
+  const p1 = (x: number | null) => (x === null ? "—" : `${x >= 0 ? "+" : ""}${x.toFixed(1)}%`);
+  const at = (pts: typeof m2, t: number) => pointAt(pts, t);
+
+  // Liquidity growth at the cycle's turning points.
+  const head = ["halving", "top", "low"].map((h) => h.padStart(7)).join(" ");
+  ctx.print(`  #   ${"M2, 12-month growth".padEnd(23)}  net liquidity, 52-week`, "info");
+  ctx.print(`      ${head}  ${head}`, "info");
+  for (const c of list) {
+    const low = c.complete && c.low ? c.low.time : null;
+    const cells = (pts: typeof m2) =>
+      [c.halving.time, c.top.time, low].map((t) => (t === null ? "—" : p1(at(pts, t))).padStart(7)).join(" ");
+    ctx.print(`  ${c.n}   ${cells(m2yoy)}  ${cells(netliqyoy)}${c.complete ? "" : " *"}`, "out");
+  }
+
+  // Lag correlations: BTC vs liquidity known `lag` months earlier.
+  const btcM = monthly(daily.times.map((t, i) => ({ time: t, value: daily.closes[i] })));
+  const m2M = monthly(m2);
+  const nlM = monthly(netliq);
+  const rows: [string, Map<number, number>, Map<number, number>][] = [
+    ["12m M2, overlapping", logChange(btcM, 12), logChange(m2M, 12)],
+    ["1m M2", logChange(btcM, 1), logChange(m2M, 1)],
+    ["1m net liquidity", logChange(btcM, 1), logChange(nlM, 1)],
+  ];
+  ctx.print(
+    `correlation with BTC's change, liquidity lagged by k months (since 2013)`,
+    "info"
+  );
+  ctx.print(`  ${"k (months)".padEnd(20)}${LIQ_LAGS.map((k) => String(k).padStart(5)).join(" ")}`, "info");
+  let best = { r: 0, k: 0, label: "", n: 0 };
+  for (const [label, btc, liq] of rows) {
+    const cells = LIQ_LAGS.map((k) => {
+      const c = lagCorrelation(btc, liq, k, LIQ_SINCE);
+      if (!label.startsWith("12m") && Math.abs(c.r) > Math.abs(best.r)) best = { r: c.r, k, label, n: c.n };
+      return (Number.isFinite(c.r) ? c.r.toFixed(2) : "—").padStart(5);
+    });
+    ctx.print(`  ${label.padEnd(20)}${cells.join(" ")}`, "out");
+  }
+  const noise = best.n ? 2 / Math.sqrt(best.n) : NaN;
+  ctx.print(
+    `  monthly noise band ±${num(noise, 2)} (n≈${best.n}) · 12-month windows overlap, so that row shares trend and overstates`,
+    "info"
+  );
+  const edge = Math.abs(best.r) > noise;
+  ctx.print(
+    edge
+      ? `monthly: strongest ${best.label} at k=${best.k}, r ${num(best.r, 2)} — beyond noise, but one of ${LIQ_LAGS.length * 2} tries`
+      : `monthly: no correlation beyond noise at any lag (best ${best.label} k=${best.k}, r ${num(best.r, 2)})`,
+    edge ? "info" : "err"
+  );
+
+  const last = (p: typeof m2) => p[p.length - 1];
+  ctx.print(
+    `now: M2 ${p1(last(m2yoy).value)} yoy (data to ${isoDate(last(m2yoy).time - 56 * DAY).slice(0, 7)}) · net liquidity $${Math.round(last(netliq).value).toLocaleString("en-US")}bn, ${p1(last(netliqyoy).value)} over 52 weeks`,
+    "out"
+  );
+  ctx.print(
+    "US only: global liquidity (China, ECB, BoJ, FX) is not included · * = live cycle, top is the high so far",
+    "info"
+  );
+}
 
 async function printMiners(ctx: CommandContext) {
   ctx.print("miner economics · mempool.space daily mining history", "info");
@@ -815,7 +902,10 @@ const config: Command = {
       "out"
     );
     ctx.print(`  powerlaw = ${o.powerlaw ? "on" : "off"}`, "out");
-    ctx.print(`  cycles   = ${o.cycles ? "on" : "off"} (align ${o.cyclesAlign}, miners ${o.miners ? "on" : "off"})`, "out");
+    ctx.print(
+      `  cycles   = ${o.cycles ? "on" : "off"} (align ${o.cyclesAlign}, miners ${o.miners ? "on" : "off"}, liquidity ${o.liquidity ? "on" : "off"})`,
+      "out"
+    );
     ctx.print(`  funding  = ${o.funding ? "on" : "off"}`, "out");
     ctx.print(`  dvol     = ${o.dvol ? "on" : "off"}`, "out");
   },

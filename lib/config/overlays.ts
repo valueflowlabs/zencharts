@@ -17,6 +17,7 @@ export interface Overlays {
   cycles: boolean; // halving-cycle markers and phase shading (BTC, 1D/1W)
   cyclesAlign: Align | "off"; // earlier cycles laid over the live one
   miners: boolean; // miner revenue multiple pane with capitulations (BTC)
+  liquidity: boolean; // US M2 and Fed net-liquidity growth pane
   funding: boolean; // funding-rate pane
   dvol: boolean; // DVOL vs realised-vol pane (BTC)
 }
@@ -29,6 +30,7 @@ export const DEFAULT_OVERLAYS: Overlays = {
   cycles: false,
   cyclesAlign: "off",
   miners: false,
+  liquidity: false,
   funding: false,
   dvol: false,
 };
@@ -47,6 +49,7 @@ export function patchOverlays(
     typeof next.cycles === "boolean" &&
     (next.cyclesAlign === "off" || ALIGNS.includes(next.cyclesAlign)) &&
     typeof next.miners === "boolean" &&
+    typeof next.liquidity === "boolean" &&
     typeof next.funding === "boolean" &&
     typeof next.dvol === "boolean";
   return valid ? next : null;

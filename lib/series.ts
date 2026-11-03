@@ -15,19 +15,30 @@
 //     Revenue uses blocks found per day = hashrate · 86400 / (difficulty · 2³²),
 //     so hashprice = reward per block · 86400 / (difficulty · 2³²) needs no
 //     noisy hashrate estimate at all.
+//   - m2yoy / netliq / netliqyoy (macro, any symbol): US liquidity from FRED's
+//     public CSV download (fredgraph.csv, no key):
+//       m2        US M2 (M2SL, monthly, SA), $bn. A month is published ~4
+//                 weeks after it ends: stamped month start + 8 weeks.
+//       m2yoy     m2, % change over 12 months.
+//       netliq    Fed net liquidity, $bn: balance sheet (WALCL) − Treasury
+//                 General Account (WTREGEN) − overnight reverse repo
+//                 (RRPONTSYD). Weekly (Wednesday), published Thursday: + 1 day.
+//       netliqyoy netliq, % change over 52 weeks.
 //
 // Note: Binance futures (fapi) geo-blocks some regions, including US cloud
 // IPs; on Vercel pin the function region to the EU (e.g. fra1).
 
-import { fetchJson } from "./sources";
+import { fetchJson, fetchText } from "./sources";
 import { getInstrument } from "./instruments";
 import { DAY } from "./time";
 import type { Point } from "./indicators/align";
 
-export type SeriesId = "funding" | "dvol" | MiningId;
+export type SeriesId = "funding" | "dvol" | MiningId | MacroId;
+export type MacroId = "m2" | "m2yoy" | "netliq" | "netliqyoy";
+const MACRO_IDS: MacroId[] = ["m2", "m2yoy", "netliq", "netliqyoy"];
 export type MiningId = "hashrate" | "revenue" | "hashprice" | "feeshare";
 const MINING_IDS: MiningId[] = ["hashrate", "revenue", "hashprice", "feeshare"];
-export const SERIES_IDS: SeriesId[] = ["funding", "dvol", ...MINING_IDS];
+export const SERIES_IDS: SeriesId[] = ["funding", "dvol", ...MINING_IDS, ...MACRO_IDS];
 
 export function isValidSeriesId(id: string): id is SeriesId {
   return SERIES_IDS.includes(id as SeriesId);
@@ -129,7 +140,58 @@ async function fetchMining(): Promise<Record<MiningId, Point[]>> {
   return out;
 }
 
+// FRED's chart CSV: "observation_date,ID" then "YYYY-MM-DD,value" rows; "."
+// marks a missing value.
+async function fred(id: string): Promise<{ time: number; value: number }[]> {
+  const csv = await fetchText(`https://fred.stlouisfed.org/graph/fredgraph.csv?id=${id}`);
+  return csv
+    .trim()
+    .split("\n")
+    .slice(1)
+    .flatMap((line) => {
+      const [date, v] = line.split(",");
+      const value = Number(v);
+      const time = Date.parse(`${date}T00:00:00Z`) / 1000;
+      return Number.isFinite(value) && Number.isFinite(time) && v !== "." ? [{ time, value }] : [];
+    });
+}
+
+// % change against the observation `lag` steps earlier.
+const pctChange = (pts: Point[], lag: number): Point[] =>
+  pts.slice(lag).map((p, i) => ({ time: p.time, value: (p.value / pts[i].value - 1) * 100 }));
+
+async function fetchMacro(): Promise<Record<MacroId, Point[]>> {
+  const [m2, walcl, tga, rrp] = await Promise.all([
+    fred("M2SL"),
+    fred("WALCL"),
+    fred("WTREGEN"),
+    fred("RRPONTSYD"),
+  ]);
+  const known = (pts: Point[]) => pts.map((p) => ({ time: p.time + 56 * DAY, value: p.value }));
+  const m2yoy = known(pctChange(m2, 12));
+  // WALCL and WTREGEN share Wednesdays ($ millions); RRP is daily ($ billions),
+  // taken as the last value on or before that Wednesday (0 before it existed).
+  const tgaAt = new Map(tga.map((p) => [p.time, p.value]));
+  let ri = -1;
+  const netliq: Point[] = [];
+  for (const w of walcl) {
+    const t = tgaAt.get(w.time);
+    if (t === undefined) continue;
+    while (ri + 1 < rrp.length && rrp[ri + 1].time <= w.time) ri++;
+    const r = ri >= 0 ? rrp[ri].value : 0;
+    netliq.push({ time: w.time + DAY, value: w.value / 1000 - t / 1000 - r });
+  }
+  return { m2: known(m2), m2yoy, netliq, netliqyoy: pctChange(netliq, 52) };
+}
+
 export async function getSeries(id: SeriesId, symbol: string): Promise<Point[]> {
+  if (MACRO_IDS.includes(id as MacroId)) {
+    const hit = cache.get(`${id}:macro`);
+    if (hit && Date.now() - hit.at < TTL_MS) return hit.data;
+    const all = await fetchMacro();
+    for (const m of MACRO_IDS) cache.set(`${m}:macro`, { at: Date.now(), data: all[m] });
+    return all[id as MacroId];
+  }
   const inst = getInstrument(symbol);
   const key = `${id}:${inst.id}`;
   const hit = cache.get(key);

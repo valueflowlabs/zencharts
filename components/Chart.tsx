@@ -35,7 +35,7 @@ import {
   phaseAt,
   type Phase,
 } from "@/lib/indicators/cycles";
-import { capitulations, revenueMultiple } from "@/lib/indicators/miners";
+import { capitulations, pointAt, revenueMultiple } from "@/lib/indicators/miners";
 import { snapToBars, valueAt, type Point } from "@/lib/indicators/align";
 import { fetchCandles, fetchSeries } from "@/lib/data";
 import { BAR_SECONDS, DAY, barStart } from "@/lib/time";
@@ -55,10 +55,10 @@ type Status = "loading" | "ready" | "error";
 
 // v4 has no real panes, so bottom panes are overlay price scales stacked with
 // `scaleMargins`; the candles shrink to make room. Listed top to bottom.
-type PaneId = "momentum" | "funding" | "dvol" | "miners";
-const PANE_ORDER: PaneId[] = ["momentum", "funding", "dvol", "miners"];
+type PaneId = "momentum" | "funding" | "dvol" | "miners" | "liquidity";
+const PANE_ORDER: PaneId[] = ["momentum", "funding", "dvol", "miners", "liquidity"];
 const CANDLE_MARGINS = { top: 0.2, bottom: 0.1 }; // library default
-const PANE_HEIGHT = [0, 0.2, 0.17, 0.14, 0.12]; // per pane, by number of panes shown
+const PANE_HEIGHT = [0, 0.2, 0.17, 0.14, 0.12, 0.1]; // per pane, by number of panes shown
 
 function paneLayout(shown: PaneId[]) {
   const n = shown.length;
@@ -96,6 +96,8 @@ interface ExternalData {
   dvol?: Point[];
   revenue?: Point[]; // miner revenue, USD/day (BTC)
   hashrate?: Point[]; // EH/s (BTC)
+  m2yoy?: Point[]; // US M2, % over 12 months (macro)
+  netliqyoy?: Point[]; // Fed net liquidity, % over 52 weeks (macro)
 }
 
 export default function Chart({ timeframe }: { timeframe: TimeframeKey }) {
@@ -117,6 +119,8 @@ export default function Chart({ timeframe }: { timeframe: TimeframeKey }) {
   // Invisible line from the last bar to the next halving, carrying its marker.
   const futureRef = useRef<ISeriesApi<"Line"> | null>(null);
   const minersRef = useRef<ISeriesApi<"Line"> | null>(null);
+  const m2Ref = useRef<ISeriesApi<"Histogram"> | null>(null);
+  const netLiqRef = useRef<ISeriesApi<"Line"> | null>(null);
   const candlesRef = useRef<Candle[]>([]);
   const externalRef = useRef<ExternalData>({ symbol: "" });
   const [externalVersion, setExternalVersion] = useState(0);
@@ -213,6 +217,12 @@ export default function Chart({ timeframe }: { timeframe: TimeframeKey }) {
       lineWidth: 1,
       crosshairMarkerVisible: false,
     });
+    m2Ref.current = chart.addHistogramSeries(pane("liquidity", signedPct));
+    netLiqRef.current = chart.addLineSeries({
+      ...pane("liquidity", signedPct),
+      lineWidth: 1,
+      crosshairMarkerVisible: false,
+    });
     // Revenue at its 1-year mean: the pane's reference level.
     minersRef.current.createPriceLine({
       price: 1,
@@ -266,6 +276,8 @@ export default function Chart({ timeframe }: { timeframe: TimeframeKey }) {
       ghostRefs.current = [];
       futureRef.current = null;
       minersRef.current = null;
+      m2Ref.current = null;
+      netLiqRef.current = null;
     };
   }, []);
 
@@ -338,6 +350,11 @@ export default function Chart({ timeframe }: { timeframe: TimeframeKey }) {
       funding: s.overlays.funding && !!ext?.funding,
       dvol: s.overlays.dvol && !!ext?.dvol,
       miners: minersAllowed && !!ext?.revenue && !!ext?.hashrate,
+      liquidity:
+        s.overlays.liquidity &&
+        (s.timeframe === "1d" || s.timeframe === "1w") &&
+        !!ext?.m2yoy &&
+        !!ext?.netliqyoy,
     };
     const layout = paneLayout(PANE_ORDER.filter((id) => want[id]));
     chart.priceScale("right").applyOptions({ scaleMargins: layout.candles });
@@ -383,6 +400,36 @@ export default function Chart({ timeframe }: { timeframe: TimeframeKey }) {
     } else {
       dvol.setData([]);
       realised.setData([]);
+    }
+
+    // Liquidity: M2 12-month growth as bars, net liquidity 52-week growth as a
+    // line, both in % and both as known on each bar (values are publish-dated).
+    const m2 = m2Ref.current;
+    const netLiq = netLiqRef.current;
+    if (m2 && netLiq) {
+      m2.applyOptions({ visible: want.liquidity });
+      netLiq.applyOptions({ visible: want.liquidity, color: s.theme.page.accent });
+      if (want.liquidity && ext?.m2yoy && ext.netliqyoy) {
+        // Monthly / weekly releases hold until the next one: each bar shows
+        // the latest value published by its close.
+        const step = BAR_SECONDS[s.timeframe];
+        const held = (pts: Point[]) =>
+          barTimes.flatMap((t) => {
+            const v = pointAt(pts, t + step);
+            return v === null ? [] : [{ time: t, value: v }];
+          });
+        m2.setData(
+          held(ext.m2yoy).map((p) => ({
+            time: asTime(p.time),
+            value: p.value,
+            color: soften(p.value >= 0 ? c.up : c.down),
+          }))
+        );
+        netLiq.setData(toLine(held(ext.netliqyoy)));
+      } else {
+        m2.setData([]);
+        netLiq.setData([]);
+      }
     }
 
     // Miners: revenue ÷ its 1-year mean, with hash-ribbon capitulation starts.
@@ -655,6 +702,7 @@ export default function Chart({ timeframe }: { timeframe: TimeframeKey }) {
   const needFunding = overlays.funding;
   const needDvol = overlays.dvol || (overlays.cone && overlays.coneModel === "dvol");
   const needMiners = overlays.miners && symbol === "btc";
+  const needLiquidity = overlays.liquidity;
   useEffect(() => {
     if (externalRef.current.symbol !== symbol) {
       externalRef.current = { symbol };
@@ -662,7 +710,9 @@ export default function Chart({ timeframe }: { timeframe: TimeframeKey }) {
     }
     const ext = externalRef.current;
     const controller = new AbortController();
-    const load = async (key: "funding" | "dvol" | "revenue" | "hashrate") => {
+    const load = async (
+      key: "funding" | "dvol" | "revenue" | "hashrate" | "m2yoy" | "netliqyoy"
+    ) => {
       try {
         const raw = await fetchSeries(key, symbol, controller.signal);
         if (externalRef.current !== ext) return;
@@ -678,8 +728,10 @@ export default function Chart({ timeframe }: { timeframe: TimeframeKey }) {
     if (needDvol && !ext.dvol) load("dvol");
     if (needMiners && !ext.revenue) load("revenue");
     if (needMiners && !ext.hashrate) load("hashrate");
+    if (needLiquidity && !ext.m2yoy) load("m2yoy");
+    if (needLiquidity && !ext.netliqyoy) load("netliqyoy");
     return () => controller.abort();
-  }, [symbol, needFunding, needDvol, needMiners]);
+  }, [symbol, needFunding, needDvol, needMiners, needLiquidity]);
 
   // (Re)load data whenever the instrument or timeframe changes, then poll the
   // last candle.
