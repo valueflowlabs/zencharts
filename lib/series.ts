@@ -24,19 +24,29 @@
 //                 General Account (WTREGEN) − overnight reverse repo
 //                 (RRPONTSYD). Weekly (Wednesday), published Thursday: + 1 day.
 //       netliqyoy netliq, % change over 52 weeks.
-//   - global liquidity (macro): G4 broad money and G3 central-bank assets in
+//   - global liquidity (macro): G5 broad money and G3 central-bank assets in
 //     USD, monthly, each month stamped when its last component is published
 //     (month start + 9 weeks):
 //       gm2       US M2 (FRED) + euro-area M2 (ECB data API) + Japan M2 (BoJ
-//                 stat-search API) + UK M4 (BoE database), $bn at month-end FX
+//                 stat-search API) + UK M4 (BoE database) + China M2, $bn at
+//                 month-end FX
 //       gm2yoy    gm2, % over 12 months
 //       gm2fx     gm2 at today's exchange rates: money without the dollar's swings
 //       gm2yoyfx  gm2fx, % over 12 months
-//       gm2us / gm2ez / gm2jp / gm2uk  the components, $bn
+//       gm2us / gm2ez / gm2jp / gm2uk / gm2cn  the components, $bn
 //       gcb       Fed + ECB + BoJ total assets, $bn at month-end FX
 //       gcbyoy    gcb, % over 12 months
-//     China is not included: no keyless source has its M2 history (FRED's
-//     ends 2019, DBnomics' NBS copy holds 13 stale months).
+//   - China (macro):
+//       cnm2      China M2, ¥bn: FRED (MYAGM2CNM189N) before 2008, then
+//                 Eastmoney's public data-centre API (the PBoC's monthly
+//                 release; the two agree exactly where they overlap). Released
+//                 mid next month: stamped month start + 7 weeks.
+//       cnm2yoy   cnm2, % over 12 months in yuan, as China reports it
+//       cnpboc    PBoC total assets, ¥bn, from the IMF's Monetary and
+//                 Financial Statistics via DBnomics. Ends 2025-06 (the IMF
+//                 copy lags); stamped month start + 8 weeks.
+//       cnpbocyoy cnpboc, % over 12 months
+//     PBoC assets stay out of gcb so that line does not stop in 2025.
 //
 // Note: Binance futures (fapi) geo-blocks some regions, including US cloud
 // IPs; on Vercel pin the function region to the EU (e.g. fra1).
@@ -47,13 +57,16 @@ import { DAY } from "./time";
 import type { Point } from "./indicators/align";
 
 export type SeriesId = "funding" | "dvol" | MiningId | MacroId;
-export type MacroId = "m2" | "m2yoy" | "netliq" | "netliqyoy" | GlobalId;
+export type MacroId = "m2" | "m2yoy" | "netliq" | "netliqyoy" | GlobalId | ChinaId;
+export type ChinaId = "cnm2" | "cnm2yoy" | "cnpboc" | "cnpbocyoy";
+const CHINA_IDS: ChinaId[] = ["cnm2", "cnm2yoy", "cnpboc", "cnpbocyoy"];
 export type GlobalId =
-  | "gm2" | "gm2fx" | "gm2yoy" | "gm2yoyfx" | "gm2us" | "gm2ez" | "gm2jp" | "gm2uk" | "gcb" | "gcbyoy";
+  | "gm2" | "gm2fx" | "gm2yoy" | "gm2yoyfx" | "gm2us" | "gm2ez" | "gm2jp" | "gm2uk" | "gm2cn"
+  | "gcb" | "gcbyoy";
 const GLOBAL_IDS: GlobalId[] = [
-  "gm2", "gm2fx", "gm2yoy", "gm2yoyfx", "gm2us", "gm2ez", "gm2jp", "gm2uk", "gcb", "gcbyoy",
+  "gm2", "gm2fx", "gm2yoy", "gm2yoyfx", "gm2us", "gm2ez", "gm2jp", "gm2uk", "gm2cn", "gcb", "gcbyoy",
 ];
-const MACRO_IDS: MacroId[] = ["m2", "m2yoy", "netliq", "netliqyoy", ...GLOBAL_IDS];
+const MACRO_IDS: MacroId[] = ["m2", "m2yoy", "netliq", "netliqyoy", ...GLOBAL_IDS, ...CHINA_IDS];
 export type MiningId = "hashrate" | "revenue" | "hashprice" | "feeshare";
 const MINING_IDS: MiningId[] = ["hashrate", "revenue", "hashprice", "feeshare"];
 export const SERIES_IDS: SeriesId[] = ["funding", "dvol", ...MINING_IDS, ...MACRO_IDS];
@@ -262,8 +275,54 @@ function monthEnd(pts: { time: number; value: number }[]): Map<number, number> {
   return out;
 }
 
+// China M2 by month, ¥bn: FRED before 2008, Eastmoney from 2008.
+async function chinaM2Monthly(): Promise<Map<number, number>> {
+  const [old, em] = await Promise.all([
+    fred("MYAGM2CNM189N"), // yuan
+    fetchJson(
+      "https://datacenter-web.eastmoney.com/api/data/v1/get?columns=REPORT_DATE,BASIC_CURRENCY" +
+        "&pageNumber=1&pageSize=1000&sortColumns=REPORT_DATE&sortTypes=1&source=WEB&client=WEB" +
+        "&reportName=RPT_ECONOMY_CURRENCY_SUPPLY"
+    ), // BASIC_CURRENCY = M2 in ¥100 million
+  ]);
+  const out = new Map<number, number>();
+  const from = ym(2008, 1);
+  for (const p of old) if (monthKey(p.time) < from) out.set(monthKey(p.time), p.value / 1e9);
+  for (const r of em?.result?.data ?? []) {
+    const [y, m] = String(r.REPORT_DATE).slice(0, 7).split("-").map(Number);
+    const v = Number(r.BASIC_CURRENCY);
+    if (y && m && Number.isFinite(v)) out.set(ym(y, m), v / 10);
+  }
+  return out;
+}
+
+// DBnomics series: parallel `period` ("YYYY-MM") and `value` arrays ("NA" = missing).
+async function dbnomicsMonthly(path: string): Promise<Map<number, number>> {
+  const json = await fetchJson(`https://api.db.nomics.world/v22/series/${path}?observations=1`);
+  const s = json?.series?.docs?.[0];
+  const out = new Map<number, number>();
+  (s?.period ?? []).forEach((p: string, i: number) => {
+    const [y, m] = p.split("-").map(Number);
+    const v = Number(s.value[i]);
+    if (y && m && Number.isFinite(v)) out.set(ym(y, m), v);
+  });
+  return out;
+}
+
+async function fetchChina(): Promise<Record<ChinaId, Point[]>> {
+  const [m2, pboc] = await Promise.all([
+    chinaM2Monthly(),
+    dbnomicsMonthly("IMF/MFS/M.CN.10RA__XDC"), // ¥ millions
+  ]);
+  const series = (m: Map<number, number>, weeks: number, scale = 1) =>
+    [...m.entries()].sort((a, b) => a[0] - b[0]).map(([t, v]) => ({ time: t + weeks * 7 * DAY, value: v * scale }));
+  const cnm2 = series(m2, 7);
+  const cnpboc = series(pboc, 8, 1 / 1000);
+  return { cnm2, cnm2yoy: pctChange(cnm2, 12), cnpboc, cnpbocyoy: pctChange(cnpboc, 12) };
+}
+
 async function fetchGlobal(): Promise<Record<GlobalId, Point[]>> {
-  const [usM2, ezM2, jpM2, ukM4, eurusd, usdjpy, gbpusd, fed, ecbA, bojA] = await Promise.all([
+  const [usM2, ezM2, jpM2, ukM4, eurusd, usdjpy, gbpusd, fed, ecbA, bojA, cnM2, usdcny] = await Promise.all([
     fred("M2SL"), // $bn
     ecbMonthly("BSI/M.U2.Y.V.M20.X.1.U2.2300.Z01.E"), // € millions, SA
     bojMonthly("MD02", "MAM1NAM2M2MO"), // ¥100 million, average outstanding
@@ -274,6 +333,8 @@ async function fetchGlobal(): Promise<Record<GlobalId, Point[]>> {
     fred("WALCL"), // $ millions, weekly
     fred("ECBASSETSW"), // € millions, weekly
     fred("JPNASSETS"), // ¥100 million, monthly
+    chinaM2Monthly(), // ¥bn
+    fred("DEXCHUS"), // ¥ (yuan) per $
   ]);
   const us = new Map(usM2.map((p) => [monthKey(p.time), p.value]));
   const eur = monthEnd(eurusd);
@@ -282,8 +343,9 @@ async function fetchGlobal(): Promise<Record<GlobalId, Point[]>> {
   const fedM = monthEnd(fed);
   const ecbM = monthEnd(ecbA);
   const bojM = monthEnd(bojA);
+  const cny = monthEnd(usdcny);
   const last = <T,>(m: Map<number, T>) => [...m.values()].at(-1)!;
-  const fxNow = { eur: last(eur), jpy: last(jpy), gbp: last(gbp) };
+  const fxNow = { eur: last(eur), jpy: last(jpy), gbp: last(gbp), cny: last(cny) };
 
   const known = (t: number) => t + 63 * DAY; // month start + 9 weeks
   const out = Object.fromEntries(GLOBAL_IDS.map((g) => [g, [] as Point[]])) as Record<GlobalId, Point[]>;
@@ -291,16 +353,28 @@ async function fetchGlobal(): Promise<Record<GlobalId, Point[]>> {
     const e = ezM2.get(t);
     const j = jpM2.get(t);
     const k = ukM4.get(t);
-    const fx = { eur: eur.get(t), jpy: jpy.get(t), gbp: gbp.get(t) };
-    if (e === undefined || j === undefined || k === undefined || !fx.eur || !fx.jpy || !fx.gbp) continue;
-    const parts = { us: u, ez: (e / 1000) * fx.eur, jp: (j / 10) / fx.jpy, uk: (k / 1000) * fx.gbp };
+    const c = cnM2.get(t);
+    const fx = { eur: eur.get(t), jpy: jpy.get(t), gbp: gbp.get(t), cny: cny.get(t) };
+    if (e === undefined || j === undefined || k === undefined || c === undefined) continue;
+    if (!fx.eur || !fx.jpy || !fx.gbp || !fx.cny) continue;
+    const parts = {
+      us: u,
+      ez: (e / 1000) * fx.eur,
+      jp: (j / 10) / fx.jpy,
+      uk: (k / 1000) * fx.gbp,
+      cn: c / fx.cny,
+    };
     const time = known(t);
     out.gm2us.push({ time, value: parts.us });
     out.gm2ez.push({ time, value: parts.ez });
     out.gm2jp.push({ time, value: parts.jp });
     out.gm2uk.push({ time, value: parts.uk });
-    out.gm2.push({ time, value: parts.us + parts.ez + parts.jp + parts.uk });
-    out.gm2fx.push({ time, value: u + (e / 1000) * fxNow.eur + (j / 10) / fxNow.jpy + (k / 1000) * fxNow.gbp });
+    out.gm2cn.push({ time, value: parts.cn });
+    out.gm2.push({ time, value: parts.us + parts.ez + parts.jp + parts.uk + parts.cn });
+    out.gm2fx.push({
+      time,
+      value: u + (e / 1000) * fxNow.eur + (j / 10) / fxNow.jpy + (k / 1000) * fxNow.gbp + c / fxNow.cny,
+    });
   }
   for (const [t, f] of [...fedM.entries()].sort((a, b) => a[0] - b[0])) {
     const e = ecbM.get(t);
@@ -319,8 +393,11 @@ export async function getSeries(id: SeriesId, symbol: string): Promise<Point[]> 
   if (MACRO_IDS.includes(id as MacroId)) {
     const hit = cache.get(`${id}:macro`);
     if (hit && Date.now() - hit.at < TTL_MS) return hit.data;
-    const isGlobal = GLOBAL_IDS.includes(id as GlobalId);
-    const all: Partial<Record<MacroId, Point[]>> = isGlobal ? await fetchGlobal() : await fetchMacro();
+    const all: Partial<Record<MacroId, Point[]>> = GLOBAL_IDS.includes(id as GlobalId)
+      ? await fetchGlobal()
+      : CHINA_IDS.includes(id as ChinaId)
+        ? await fetchChina()
+        : await fetchMacro();
     for (const [m, data] of Object.entries(all)) cache.set(`${m}:macro`, { at: Date.now(), data: data! });
     return all[id as MacroId]!;
   }

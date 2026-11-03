@@ -9,6 +9,11 @@ import {
 } from "../indicators/cone";
 import { ALIGNS, type Align } from "../indicators/cycles";
 
+// us: US M2 + Fed net liquidity · global: G5 broad money + G3 central banks
+// · china: China M2 (in yuan) + PBoC assets.
+export const LIQUIDITY_SCOPES = ["us", "global", "china"] as const;
+export type LiquidityScope = (typeof LIQUIDITY_SCOPES)[number];
+
 export interface Overlays {
   cone: boolean; // volatility cone after the last bar
   coneModel: ConeModel;
@@ -18,7 +23,7 @@ export interface Overlays {
   cyclesAlign: Align | "off"; // earlier cycles laid over the live one
   miners: boolean; // miner revenue multiple pane with capitulations (BTC)
   liquidity: boolean; // liquidity growth pane
-  liquidityScope: "us" | "global"; // US M2 + Fed net liquidity, or G4 M2 + G3 central banks
+  liquidityScope: LiquidityScope; // which liquidity the pane shows
   funding: boolean; // funding-rate pane
   dvol: boolean; // DVOL vs realised-vol pane (BTC)
 }
@@ -52,7 +57,7 @@ export function patchOverlays(
     (next.cyclesAlign === "off" || ALIGNS.includes(next.cyclesAlign)) &&
     typeof next.miners === "boolean" &&
     typeof next.liquidity === "boolean" &&
-    (next.liquidityScope === "us" || next.liquidityScope === "global") &&
+    LIQUIDITY_SCOPES.includes(next.liquidityScope) &&
     typeof next.funding === "boolean" &&
     typeof next.dvol === "boolean";
   return valid ? next : null;

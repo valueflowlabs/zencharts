@@ -15,6 +15,7 @@ import {
 import type { TimeframeKey } from "@/lib/timeframes";
 import type { Candle } from "@/lib/types";
 import { useConfig } from "@/lib/config/ConfigContext";
+import type { LiquidityScope } from "@/lib/config/overlays";
 import { momentumAt, momentumSeries } from "@/lib/indicators/momentum";
 import { buildCone } from "@/lib/indicators/cone";
 import {
@@ -82,6 +83,17 @@ const asTime = (t: number) => t as UTCTimestamp;
 const toLine = (pts: Point[]) =>
   pts.map((p) => ({ time: asTime(p.time), value: p.value }));
 
+// Bars and line the liquidity pane draws for each scope.
+function liquidityPair(scope: LiquidityScope, ext: ExternalData | null) {
+  if (!ext) return null;
+  const pick = {
+    us: [ext.m2yoy, ext.netliqyoy],
+    global: [ext.gm2yoy, ext.gcbyoy],
+    china: [ext.cnm2yoy, ext.cnpbocyoy],
+  }[scope];
+  return pick[0] && pick[1] ? { bars: pick[0], line: pick[1] } : null;
+}
+
 // Thin, quiet line for overlays: no price label, no crosshair dot.
 const QUIET_LINE = {
   lineWidth: 1,
@@ -100,6 +112,8 @@ interface ExternalData {
   netliqyoy?: Point[]; // Fed net liquidity, % over 52 weeks (macro)
   gm2yoy?: Point[]; // G4 broad money in USD, % over 12 months (macro)
   gcbyoy?: Point[]; // Fed + ECB + BoJ assets in USD, % over 12 months (macro)
+  cnm2yoy?: Point[]; // China M2 in yuan, % over 12 months (macro)
+  cnpbocyoy?: Point[]; // PBoC assets, % over 12 months, to 2025-06 (macro)
 }
 
 export default function Chart({ timeframe }: { timeframe: TimeframeKey }) {
@@ -355,9 +369,7 @@ export default function Chart({ timeframe }: { timeframe: TimeframeKey }) {
       liquidity:
         s.overlays.liquidity &&
         (s.timeframe === "1d" || s.timeframe === "1w") &&
-        (s.overlays.liquidityScope === "global"
-          ? !!ext?.gm2yoy && !!ext?.gcbyoy
-          : !!ext?.m2yoy && !!ext?.netliqyoy),
+        !!liquidityPair(s.overlays.liquidityScope, ext)?.bars,
     };
     const layout = paneLayout(PANE_ORDER.filter((id) => want[id]));
     chart.priceScale("right").applyOptions({ scaleMargins: layout.candles });
@@ -407,24 +419,29 @@ export default function Chart({ timeframe }: { timeframe: TimeframeKey }) {
 
     // Liquidity, both in % and as known on each bar (values are publish-dated).
     // US: M2 12-month growth as bars, Fed net liquidity 52-week growth as a
-    // line. Global: G4 broad money in USD as bars, G3 central banks as a line.
+    // line. Global: G5 broad money in USD as bars, G3 central banks as a line.
+    // China: M2 growth in yuan as bars, PBoC assets (to 2025-06) as a line.
     const m2 = m2Ref.current;
     const netLiq = netLiqRef.current;
     if (m2 && netLiq) {
       m2.applyOptions({ visible: want.liquidity });
       netLiq.applyOptions({ visible: want.liquidity, color: s.theme.page.accent });
-      const global = s.overlays.liquidityScope === "global";
-      const bars = global ? ext?.gm2yoy : ext?.m2yoy;
-      const line = global ? ext?.gcbyoy : ext?.netliqyoy;
+      const pair = liquidityPair(s.overlays.liquidityScope, ext);
+      const bars = pair?.bars;
+      const line = pair?.line;
       if (want.liquidity && bars && line) {
         // Monthly / weekly releases hold until the next one: each bar shows
         // the latest value published by its close.
         const step = BAR_SECONDS[s.timeframe];
-        const held = (pts: Point[]) =>
-          barTimes.flatMap((t) => {
-            const v = pointAt(pts, t + step);
+        // A series that stops (PBoC assets end in 2025) is not carried on
+        // past one missed monthly release.
+        const held = (pts: Point[]) => {
+          const until = (pts[pts.length - 1]?.time ?? 0) + 62 * DAY;
+          return barTimes.flatMap((t) => {
+            const v = t + step <= until ? pointAt(pts, t + step) : null;
             return v === null ? [] : [{ time: t, value: v }];
           });
+        };
         m2.setData(
           held(bars).map((p) => ({
             time: asTime(p.time),
@@ -719,7 +736,9 @@ export default function Chart({ timeframe }: { timeframe: TimeframeKey }) {
     const ext = externalRef.current;
     const controller = new AbortController();
     const load = async (
-      key: "funding" | "dvol" | "revenue" | "hashrate" | "m2yoy" | "netliqyoy" | "gm2yoy" | "gcbyoy"
+      key:
+        | "funding" | "dvol" | "revenue" | "hashrate"
+        | "m2yoy" | "netliqyoy" | "gm2yoy" | "gcbyoy" | "cnm2yoy" | "cnpbocyoy"
     ) => {
       try {
         const raw = await fetchSeries(key, symbol, controller.signal);
@@ -736,13 +755,13 @@ export default function Chart({ timeframe }: { timeframe: TimeframeKey }) {
     if (needDvol && !ext.dvol) load("dvol");
     if (needMiners && !ext.revenue) load("revenue");
     if (needMiners && !ext.hashrate) load("hashrate");
-    if (needLiquidity && liquidityScope === "us") {
-      if (!ext.m2yoy) load("m2yoy");
-      if (!ext.netliqyoy) load("netliqyoy");
-    }
-    if (needLiquidity && liquidityScope === "global") {
-      if (!ext.gm2yoy) load("gm2yoy");
-      if (!ext.gcbyoy) load("gcbyoy");
+    if (needLiquidity) {
+      const keys = ({
+        us: ["m2yoy", "netliqyoy"],
+        global: ["gm2yoy", "gcbyoy"],
+        china: ["cnm2yoy", "cnpbocyoy"],
+      } as const)[liquidityScope];
+      for (const k of keys) if (!ext[k]) load(k);
     }
     return () => controller.abort();
   }, [symbol, needFunding, needDvol, needMiners, needLiquidity, liquidityScope]);
