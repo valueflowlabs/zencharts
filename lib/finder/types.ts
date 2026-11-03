@@ -64,8 +64,18 @@ export function isChainId(v: string): v is ChainId {
 }
 
 // Where a candidate was discovered. "profile" and "boost" are paid DexScreener
-// placements, so they are shown as promotion, never scored as merit.
-export type Origin = "new" | "trending" | "profile" | "boost" | "lookup";
+// placements, so they are shown as promotion, never scored as merit. "watch"
+// is the hand-picked WATCHLIST below.
+export type Origin = "new" | "trending" | "profile" | "boost" | "lookup" | "watch";
+
+// Tokens every scan of a chain includes, whether or not discovery finds them.
+// They still go through every gate and check; this only guarantees a look.
+export const WATCHLIST: Partial<Record<ChainId, { address: string; note: string }[]>> = {
+  robinhood: [
+    { address: "0x2531F3ca1b31086b7FC130eCDa6D3253DAF83ba3", note: "QUOTIENT · quotient.social" },
+    { address: "0xBa729677349F41fa082BBD50F3c291A3B4b41111", note: "SIL · siliconnetwork.io" },
+  ],
+};
 
 export type Window = "m5" | "h1" | "h6" | "h24";
 export const WINDOWS: Window[] = ["m5", "h1", "h6", "h24"];
@@ -149,6 +159,17 @@ export interface ScanResult {
   at: number; // ms
   tokens: FinderToken[];
   sources: Record<string, "ok" | "error">;
+}
+
+// "https://dexscreener.com/<chain>/<pair or token>" → its parts, or null when
+// the input is not a DexScreener link on a supported chain.
+export function parseDexScreenerUrl(input: string): { chain: ChainId; id: string } | null {
+  const m = input
+    .trim()
+    .match(/^(?:https?:\/\/)?(?:www\.)?dexscreener\.com\/([a-z0-9-]+)\/([0-9A-Za-z]+)/i);
+  if (!m) return null;
+  const chain = m[1].toLowerCase();
+  return isChainId(chain) ? { chain, id: m[2] } : null;
 }
 
 export const DEFAULT_MIN_LIQ = 10_000;

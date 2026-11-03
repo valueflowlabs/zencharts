@@ -31,6 +31,7 @@ import {
 } from "./sources";
 import {
   CHAINS,
+  WATCHLIST,
   WINDOWS,
   type ChainId,
   type Check,
@@ -216,6 +217,8 @@ async function runScan(p: ScanParams): Promise<ScanResult> {
     c.icon ??= icon;
     cands.set(key, c);
   };
+  // Watchlist first, so the candidate cap below never drops it.
+  for (const w of WATCHLIST[p.chain] ?? []) add(w.address, "watch", null, null);
   for (const g of fresh ?? []) add(g.tokenAddress, "new", g, g.icon);
   for (const g of trending ?? []) add(g.tokenAddress, "trending", g, g.icon);
   for (const d of profiles ?? []) if (d.chainId === p.chain) add(d.tokenAddress, "profile", null, d.icon);
@@ -258,11 +261,15 @@ async function runScan(p: ScanParams): Promise<ScanResult> {
     };
   });
 
-  // Security sweep only for tokens that survived the cheap gates.
-  const survivors = staged
+  // Security sweep only for tokens that survived the cheap gates; watchlist
+  // tokens always get one on top of the top-N.
+  const passed = staged
     .filter((s) => s.market && !s.pre.some((x) => x.status === "fail"))
-    .sort((a, b) => b.prelim - a.prelim)
-    .slice(0, SECURITY_TOP_N);
+    .sort((a, b) => b.prelim - a.prelim);
+  const survivors = [
+    ...passed.filter((s) => s.c.origins.has("watch")),
+    ...passed.filter((s) => !s.c.origins.has("watch")).slice(0, SECURITY_TOP_N),
+  ];
   const sec = await securityFor(
     p.chain,
     survivors.map((s) => ({ address: s.c.address, market: s.market }))

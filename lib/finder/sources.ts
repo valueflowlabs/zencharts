@@ -276,6 +276,17 @@ export async function dsTokenPairs(chain: ChainId, addresses: string[]) {
   return ok ? out : null;
 }
 
+// One pair by its id: a pool address, or a 32-byte pool id on Uniswap v4.
+// Resolves to `null` when the id is not a pair (e.g. it is a token address).
+export function dsPair(chain: ChainId, pairId: string) {
+  return soft(
+    cached(`ds:pair:${chain}:${pairId}`, 45_000, async (): Promise<DsPair | null> => {
+      const json = await fetchJson(`${DS}/latest/dex/pairs/${chain}/${pairId}`);
+      return json?.pair ?? json?.pairs?.[0] ?? null;
+    })
+  );
+}
+
 // ---- RugCheck (Solana) ------------------------------------------------------
 
 export function rugcheckReport(mint: string) {

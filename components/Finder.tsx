@@ -11,6 +11,7 @@ import {
   type ChainId,
   type Check,
   type CheckGroup,
+  parseDexScreenerUrl,
   type FinderToken,
   type ScanResult,
 } from "@/lib/finder/types";
@@ -49,6 +50,7 @@ export default function Finder() {
   const [scan, setScan] = useState<Load<ScanResult>>({ state: "loading" });
   const [selected, setSelected] = useState<string | null>(null);
   const [lookup, setLookup] = useState("");
+  const [lookupError, setLookupError] = useState<string | null>(null);
   const [, tick] = useState(0);
 
   const load = useCallback(async () => {
@@ -81,10 +83,29 @@ export default function Finder() {
   const failed = tokens.length - tokens.filter((t) => t.verdict !== "fail").length;
   const downSources = Object.entries(scan.data?.sources ?? {}).filter(([, s]) => s === "error");
 
-  const submitLookup = (e: React.FormEvent) => {
+  const submitLookup = async (e: React.FormEvent) => {
     e.preventDefault();
     const a = lookup.trim();
     if (!a) return;
+    setLookupError(null);
+    // A DexScreener link names its chain; its id may be a pair, so resolve it.
+    const ds = parseDexScreenerUrl(a);
+    if (ds) {
+      try {
+        const r = await getJson<{ chain: ChainId; address: string }>(
+          `/api/finder/resolve?chain=${ds.chain}&id=${encodeURIComponent(ds.id)}`
+        );
+        setChain(r.chain);
+        setSelected(r.address);
+      } catch (err) {
+        setLookupError((err as Error).message);
+      }
+      return;
+    }
+    if (/dexscreener\.com\//i.test(a)) {
+      setLookupError("Unsupported DexScreener chain");
+      return;
+    }
     // Pick the chain from the address shape when it is unambiguous.
     if (/^0x/i.test(a) && chain === "solana") setChain("base");
     if (!/^0x/i.test(a)) setChain("solana");
@@ -141,7 +162,7 @@ export default function Finder() {
           <input
             value={lookup}
             onChange={(e) => setLookup(e.target.value)}
-            placeholder="check a token address…"
+            placeholder="check a token address or DexScreener link…"
             spellCheck={false}
             autoCapitalize="off"
           />
@@ -156,6 +177,7 @@ export default function Finder() {
           unavailable this scan: {downSources.map(([k]) => k).join(", ")} — affected checks show “?”
         </div>
       )}
+      {lookupError && <div className="fd-note fd-note--err">lookup failed: {lookupError}</div>}
       {scan.state === "error" && <div className="fd-note fd-note--err">scan failed: {scan.error}</div>}
 
       <div className="fd-table">
@@ -208,6 +230,7 @@ function Row({ t, onOpen, active }: { t: FinderToken; onOpen: () => void; active
         {t.icon ? <img src={t.icon} alt="" className="fd-icon" loading="lazy" /> : <span className="fd-icon" />}
         <span className="fd-sym">{t.symbol}</span>
         <span className="fd-badges">
+          {t.origins.includes("watch") && <i className="fd-badge" title="On the finder watchlist">watch</i>}
           {t.origins.includes("new") && <i className="fd-badge">new</i>}
           {t.origins.includes("trending") && <i className="fd-badge">trend</i>}
           {t.promoted && <i className="fd-badge fd-badge--paid" title="Paid DexScreener profile/boost">paid</i>}
