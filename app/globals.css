@@ -430,6 +430,26 @@ body {
   color: var(--accent-fg);
 }
 
+.fd-watch {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px;
+  margin-bottom: 12px;
+}
+
+.fd-watch .fd-chip {
+  border: 1px solid var(--border);
+}
+
+.fd-watch-label {
+  color: var(--fg);
+  font: 11px/1 var(--mono);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  margin-right: 6px;
+}
+
 .fd-controls {
   display: flex;
   flex-wrap: wrap;

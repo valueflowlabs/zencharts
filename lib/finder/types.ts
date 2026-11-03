@@ -70,10 +70,17 @@ export type Origin = "new" | "trending" | "profile" | "boost" | "lookup" | "watc
 
 // Tokens every scan of a chain includes, whether or not discovery finds them.
 // They still go through every gate and check; this only guarantees a look.
-export const WATCHLIST: Partial<Record<ChainId, { address: string; note: string }[]>> = {
+// The finder also lists them at the top for one-click access.
+export interface WatchToken {
+  address: string;
+  symbol: string;
+  site: string;
+}
+
+export const WATCHLIST: Partial<Record<ChainId, WatchToken[]>> = {
   robinhood: [
-    { address: "0x2531F3ca1b31086b7FC130eCDa6D3253DAF83ba3", note: "QUOTIENT · quotient.social" },
-    { address: "0xBa729677349F41fa082BBD50F3c291A3B4b41111", note: "SIL · siliconnetwork.io" },
+    { address: "0x2531F3ca1b31086b7FC130eCDa6D3253DAF83ba3", symbol: "QUOTIENT", site: "quotient.social" },
+    { address: "0xBa729677349F41fa082BBD50F3c291A3B4b41111", symbol: "SIL", site: "siliconnetwork.io" },
   ],
 };
 

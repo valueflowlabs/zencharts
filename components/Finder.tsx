@@ -12,6 +12,7 @@ import {
   type Check,
   type CheckGroup,
   parseDexScreenerUrl,
+  WATCHLIST,
   type FinderToken,
   type ScanResult,
 } from "@/lib/finder/types";
@@ -136,6 +137,25 @@ export default function Finder() {
           ))}
         </nav>
       </header>
+
+      <nav className="fd-watch" aria-label="Watchlist">
+        <span className="fd-watch-label">watch</span>
+        {CHAIN_IDS.flatMap((c) =>
+          (WATCHLIST[c] ?? []).map((w) => (
+            <button
+              key={`${c}:${w.address}`}
+              className={`fd-chip${c === chain && selected === w.address ? " is-on" : ""}`}
+              onClick={() => {
+                setChain(c);
+                setSelected(w.address);
+              }}
+              title={`${CHAINS[c].label} · ${w.site}`}
+            >
+              {w.symbol}
+            </button>
+          ))
+        )}
+      </nav>
 
       <div className="fd-controls">
         <label className="fd-field">
