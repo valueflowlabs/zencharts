@@ -3,6 +3,7 @@
 import { Suspense, useCallback } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import Chart from "@/components/Chart";
+import ChartOnlyToggle from "@/components/ChartOnlyToggle";
 import TimeframeSelector from "@/components/TimeframeSelector";
 import Terminal from "@/components/Terminal";
 import ViewportPin from "@/components/ViewportPin";
@@ -47,6 +48,7 @@ export default function Home() {
   // useSearchParams needs a Suspense boundary during prerender.
   return (
     <ConfigProvider>
+      <ChartOnlyToggle />
       <Suspense fallback={<main className="zen" />}>
         <ZenChart />
       </Suspense>

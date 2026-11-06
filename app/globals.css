@@ -101,6 +101,12 @@ body {
   pointer-events: auto;
 }
 
+/* Chart-only mode (toggled with `C`, see components/ChartOnlyToggle.tsx):
+   hide every floating control so nothing but the chart is on screen. */
+html[data-chart-only] .vv-pin {
+  display: none;
+}
+
 /* Minimal timeframe bar — floats bottom-center, fades out until hovered. */
 .tf-bar {
   position: fixed;
