@@ -194,6 +194,11 @@ export default function Chart({ timeframe }: { timeframe: TimeframeKey }) {
         priceScaleId: "cycles",
         visible: false,
         lineColor: "rgba(0,0,0,0)",
+        // Pin the scale to 0..1. Autoscale would fit only the visible bars:
+        // zoomed into a stretch with no phase, every value is 0, the flat
+        // range gets padded around 0, and the "outside" level lands mid-pane,
+        // tinting the bottom half grey up to the last candle.
+        autoscaleInfoProvider: () => ({ priceRange: { minValue: 0, maxValue: 1 } }),
       });
     const cycleShades = { rise: shadeArea(), fall: shadeArea(), base: shadeArea() };
     chart.priceScale("cycles").applyOptions({ visible: false, scaleMargins: { top: 0, bottom: 0 } });
